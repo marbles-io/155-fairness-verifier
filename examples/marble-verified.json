@@ -1,0 +1,15 @@
+{
+  "_comment": "Synthetic marble-race example (illustrative, not a production round). The finishing order is fully seed-derived — one draw at label 'order' picks the index into the canonical 8-permute-3 = 336 orderings. Feed it to verify.html or `node examples/verify-example.mjs examples/marble-verified.json` — it reproduces order=green,red,white (index 106), and the verdict is VERIFIED.",
+  "game": "marble_order",
+  "schemeVersion": 2,
+  "observedCommitment": "a9f136a13257f9d9fba5ec59a969f8c59ce104291084b9d362ab9194ae29f3c0",
+  "serverSeed": "b39872e6903b1e8bad25274e8d13b1e42e4e35b351822b9d724c6d1296083cfa",
+  "chainRootHash": "92a662d65b51834501198d3853bd0bf85e5a4803707ac59d3a6c20c5e1e140a2",
+  "chainIndex": 3,
+  "beacon": "",
+  "marbles": "black,blue,green,orange,red,sky,white,yellow",
+  "k": 3,
+  "order": "green,red,white",
+  "index": 106,
+  "draw": "5142bd05c2e59"
+}

@@ -1,0 +1,17 @@
+{
+  "_comment": "Synthetic counting-round example (illustrative, not a production round). The final count is measured from the clip — it is an input to the check, not a seed derivation. Feed it to verify.html or `node examples/verify-example.mjs examples/counting-verified.json` — it reproduces outcome=under and bounds 16-19, and the verdict is VERIFIED.",
+  "game": "vehicle_boundaries",
+  "schemeVersion": 2,
+  "observedCommitment": "33daf23ce95a97f41580ae5513701b5d5d2e76d8011eae04b8ddf6dd8c40b0d0",
+  "serverSeed": "bd1d56780d21fd5b27d74261a9540ad02fb754df919c2b508d5719fec09722b1",
+  "chainRootHash": "d3d4784b6bb08b03c94ed716696e31674da41ac483404677d79854063486499e",
+  "chainIndex": 4,
+  "beacon": "",
+  "finalCount": 14,
+  "gap": 3,
+  "outcome": "under",
+  "lowerBound": 16,
+  "upperBound": 19,
+  "outcomes": "under,range,over,jackpot",
+  "weightsPpm": "250000,500000,200000,50000"
+}

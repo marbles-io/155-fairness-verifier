@@ -1,0 +1,14 @@
+{
+  "name": "155-fairness-verifier",
+  "version": "1.0.0",
+  "description": "Independent, dependency-free verifier for 155 provably-fair game rounds (crash, and more). Run it yourself; trust no server.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "test": "node test/run.mjs && node test/verdict.mjs && node test/check-inline.mjs",
+    "example": "node examples/verify-example.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

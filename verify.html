@@ -1,0 +1,962 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>155 Provably-Fair Verifier</title>
+    <style>
+      :root {
+        --bg: #0b0f14;
+        --panel: #121821;
+        --panel-2: #0e141c;
+        --ink: #e7edf3;
+        --muted: #8a97a6;
+        --line: #1f2a37;
+        --accent: #4da3ff;
+        --green: #3fb98a;
+        --green-bg: #10241d;
+        --amber: #d8a640;
+        --amber-bg: #241d0f;
+        --red: #e5637a;
+        --red-bg: #26141a;
+        --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap { max-width: 860px; margin: 0 auto; padding: 32px 20px 80px; }
+      header { border-bottom: 1px solid var(--line); padding-bottom: 22px; margin-bottom: 26px; }
+      h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -0.01em; }
+      h1 .dot { color: var(--accent); }
+      .tag { color: var(--muted); margin: 0; font-size: 14.5px; }
+      .tag strong { color: var(--ink); font-weight: 600; }
+      h2 { font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin: 28px 0 12px; font-weight: 600; }
+      .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
+      label { display: block; font-size: 12.5px; color: var(--muted); margin: 0 0 5px; }
+      /* Bridges a wire token to the name players actually saw on the board —
+         the field takes `jackpot`, but the game only ever called it Exact. */
+      .hint { opacity: 0.65; font-style: italic; }
+      .field { margin-bottom: 13px; }
+      .row { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
+      input, textarea, select {
+        width: 100%; background: var(--panel-2); border: 1px solid var(--line); color: var(--ink);
+        border-radius: 8px; padding: 9px 11px; font-family: var(--mono); font-size: 13px; outline: none;
+      }
+      select { font-family: inherit; }
+      input:focus, textarea:focus, select:focus { border-color: var(--accent); }
+      textarea { resize: vertical; min-height: 92px; line-height: 1.45; }
+      .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 13px; }
+      /* One `game` discriminator drives the whole form. Absent/anything else = crash. */
+      body:not([data-game="crash"]) .crash-only { display: none; }
+      /* Only crash has a second field (result multiplier) in the commitment row. */
+      body:not([data-game="crash"]) .row-commit { grid-template-columns: 1fr; }
+      body:not([data-game="vehicle_boundaries"]) .counting-only { display: none; }
+      body:not([data-game="marble_order"]) .marble-only { display: none; }
+      .btns { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+      button {
+        font: 600 14px system-ui; border-radius: 8px; padding: 10px 18px; cursor: pointer;
+        border: 1px solid var(--line); background: var(--panel-2); color: var(--ink); transition: border-color .12s;
+      }
+      button:hover { border-color: var(--accent); }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #04121f; }
+      button.primary:hover { filter: brightness(1.08); }
+      .link { color: var(--accent); text-decoration: none; }
+      .link:hover { text-decoration: underline; }
+      .muted { color: var(--muted); }
+      details { margin-top: 12px; }
+      summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+      details[open] summary { margin-bottom: 12px; }
+
+      /* verdict */
+      #out { margin-top: 26px; }
+      .verdict { border-radius: 12px; padding: 18px 20px; border: 1px solid var(--line); display: flex; gap: 14px; align-items: flex-start; }
+      .verdict .icon { font-size: 22px; line-height: 1.1; }
+      .verdict .vtitle { font-size: 17px; font-weight: 700; margin: 0 0 3px; }
+      .verdict .vsub { font-size: 13.5px; margin: 0; }
+      .v-verified { background: var(--green-bg); border-color: #21463a; }
+      .v-verified .vtitle, .v-verified .icon { color: var(--green); }
+      .v-inconclusive { background: var(--amber-bg); border-color: #3f3418; }
+      .v-inconclusive .vtitle, .v-inconclusive .icon { color: var(--amber); }
+      .v-mismatch { background: var(--red-bg); border-color: #45222c; }
+      .v-mismatch .vtitle, .v-mismatch .icon { color: var(--red); }
+      .v-error { background: var(--panel); }
+      .v-error .vtitle, .v-error .icon { color: var(--amber); }
+
+      .steps { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
+      .step { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 13px 15px; }
+      .step-head { display: flex; align-items: center; gap: 9px; }
+      .step-head .s-ic { width: 18px; text-align: center; }
+      .step-head .s-name { font-weight: 600; font-size: 14px; }
+      .s-ok { color: var(--green); }
+      .s-bad { color: var(--red); }
+      .s-na { color: var(--amber); }
+      .step .detail { margin: 9px 0 0; font-size: 12.5px; color: var(--muted); }
+      .kv { margin: 8px 0 0; display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; font-family: var(--mono); font-size: 12px; }
+      .kv .k { color: var(--muted); }
+      .kv .val { color: var(--ink); word-break: break-all; }
+      .kv .val.hl { color: var(--accent); }
+      footer { margin-top: 40px; border-top: 1px solid var(--line); padding-top: 18px; color: var(--muted); font-size: 12.5px; }
+      code { font-family: var(--mono); background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+      @media (max-width: 560px) { .row, .row3 { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>155 Provably-Fair Verifier<span class="dot">.</span></h1>
+        <p class="tag">
+          Recompute any round on <strong>your own machine</strong> and confirm the result was fixed
+          before you bet. This page runs entirely in your browser — nothing is sent to any server.
+          Works offline; <a class="link" href="README.md">read the algorithm</a> and reimplement it yourself.
+        </p>
+      </header>
+
+      <h2>Round values (all public)</h2>
+      <div class="card">
+        <div class="field">
+          <label for="game">Game</label>
+          <select id="game">
+            <option value="">CCTV crash — multiplier curve (Footfall)</option>
+            <option value="vehicle_boundaries">CCTV counting — boundaries (Rush Hour, Snow Run, Duck River…)</option>
+            <option value="marble_order">Classic games — winner (Plinko, Snake, Coin Flip…)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="seed">Revealed server seed — hex, published at settlement</label>
+          <input id="seed" spellcheck="false" placeholder="6f7081467a4f…" />
+        </div>
+        <div class="row row-commit">
+          <div class="field">
+            <label for="commit">Commitment — published when betting opened</label>
+            <input id="commit" spellcheck="false" placeholder="d2d41bed3cc8…" />
+          </div>
+          <div class="field crash-only">
+            <label for="mult">Result multiplier</label>
+            <input id="mult" spellcheck="false" placeholder="5.16" />
+          </div>
+        </div>
+        <div class="row counting-only">
+          <div class="field">
+            <label for="finalCount">Final count — measured from the clip, not from the seed</label>
+            <input id="finalCount" spellcheck="false" placeholder="14" />
+          </div>
+          <div class="field">
+            <label for="gap">Gap — the boundary width (default 3)</label>
+            <input id="gap" spellcheck="false" placeholder="3" />
+          </div>
+        </div>
+        <div class="row3 counting-only" style="margin-bottom: 13px">
+          <div class="field" style="margin-bottom: 0">
+            <label for="outcome">Published outcome <span class="hint">(jackpot = the Exact market)</span></label>
+            <input id="outcome" spellcheck="false" placeholder="under · range · over · jackpot" />
+          </div>
+          <div class="field" style="margin-bottom: 0">
+            <label for="lower">Published lower bound</label>
+            <input id="lower" spellcheck="false" placeholder="16" />
+          </div>
+          <div class="field" style="margin-bottom: 0">
+            <label for="upper">Published upper bound</label>
+            <input id="upper" spellcheck="false" placeholder="19" />
+          </div>
+        </div>
+        <div class="row marble-only">
+          <div class="field">
+            <label for="marbles">Marbles — entrant names, canonical order, comma-separated</label>
+            <input id="marbles" spellcheck="false" placeholder="black,blue,green,orange,red,sky,white,yellow" />
+          </div>
+          <div class="field">
+            <label for="kplaces">Places (k) — 1 for a single winner, 3 for a podium</label>
+            <input id="kplaces" spellcheck="false" placeholder="3" />
+          </div>
+        </div>
+        <div class="field marble-only" style="margin-bottom: 13px">
+          <label for="morder">Published finishing order — 1st, 2nd, … comma-separated</label>
+          <input id="morder" spellcheck="false" placeholder="blue,sky,red" />
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="root">Chain root — published before the batch</label>
+            <input id="root" spellcheck="false" placeholder="f22f0e6a…" />
+          </div>
+          <div class="field">
+            <label for="idx">Chain index</label>
+            <input id="idx" spellcheck="false" placeholder="4" />
+          </div>
+        </div>
+        <details>
+          <summary>Advanced (house edge / outcome weights, beacon, scheme)</summary>
+          <div class="row">
+            <div class="field crash-only">
+              <label for="edge">House edge</label>
+              <input id="edge" spellcheck="false" placeholder="0.06" />
+            </div>
+            <div class="field">
+              <label for="beacon">Beacon randomness — blank for crash</label>
+              <input id="beacon" spellcheck="false" placeholder="(empty)" />
+            </div>
+          </div>
+          <div class="row counting-only">
+            <div class="field">
+              <label for="outcomes">Outcomes — canonical order, comma-separated</label>
+              <input id="outcomes" spellcheck="false" placeholder="under,range,over,jackpot" />
+            </div>
+            <div class="field">
+              <label for="weights">Weights (ppm) — must sum to 1,000,000</label>
+              <input id="weights" spellcheck="false" placeholder="300000,400000,250000,50000" />
+            </div>
+          </div>
+          <div class="field marble-only">
+            <label for="marbleWeights">Weights (ppm) — weighted games only, one per marble, must sum to 1,000,000</label>
+            <input id="marbleWeights" spellcheck="false" placeholder="471700,377400,94300,47200,9400" />
+          </div>
+          <div class="row marble-only">
+            <div class="field">
+              <label for="marbleIndex">Published index <span class="hint">(optional cross-check)</span></label>
+              <input id="marbleIndex" spellcheck="false" placeholder="69" />
+            </div>
+            <div class="field">
+              <label for="marbleDraw">Published draw — 13-hex <span class="hint">(optional cross-check)</span></label>
+              <input id="marbleDraw" spellcheck="false" placeholder="5142bd05c2e59" />
+            </div>
+          </div>
+          <div class="field" style="margin-bottom: 0">
+            <label for="paste">…or paste the round JSON to fill every field</label>
+            <textarea id="paste" spellcheck="false" placeholder='{ "serverSeed": "…", "observedCommitment": "…", "chainRootHash": "…", "chainIndex": 4, "houseEdge": 0.06, "multiplier": 5.16 }'></textarea>
+          </div>
+        </details>
+        <div class="btns">
+          <button class="primary" id="verify">Verify round</button>
+          <button id="fromPaste">Fill from JSON</button>
+          <button id="example">Load example</button>
+        </div>
+      </div>
+
+      <div id="out"></div>
+
+      <footer>
+        Open-source &amp; MIT-licensed. The crypto on this page is byte-identical to the game engine and
+        locked to a shared set of golden test vectors. A <span class="muted">VERIFIED</span> verdict means
+        <em>you</em> reproduced the outcome from the pre-published commitment — not that we told you it was fair.
+      </footer>
+    </div>
+
+    <script type="module">
+      // ────────────────────────────────────────────────────────────────────
+      // INLINED verifier core (identical to src/core.js + mappers.js + verify.js).
+      // Inlined so this page runs standalone from file:// (browsers block module
+      // imports over file://). test/check-inline.mjs re-locks this copy to the
+      // golden vectors, so it can never silently drift from the engine.
+      // ────────────────────────────────────────────────────────────────────
+      const R_DENOM = 2 ** 52
+      function subtle() {
+        const s = globalThis.crypto?.subtle
+        if (!s) throw new Error('Web Crypto unavailable — open over https:// or file://, or use a modern browser.')
+        return s
+      }
+      const toHex = (buf) => Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('')
+      function hexToBytes(hex) {
+        if (hex.length % 2 !== 0) throw new Error('odd-length hex: ' + hex)
+        if (!/^[0-9a-f]*$/i.test(hex)) throw new Error('non-hex input: ' + hex) // fail closed
+        const out = new Uint8Array(hex.length / 2)
+        for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+        return out
+      }
+      async function sha256Ascii(hexStr) {
+        return toHex(await subtle().digest('SHA-256', new TextEncoder().encode(hexStr)))
+      }
+      async function walkToRoot(serverSeed, chainIndex) {
+        let h = serverSeed
+        for (let i = 0; i < chainIndex; i++) h = await sha256Ascii(h)
+        return h
+      }
+      async function hmacSha256Hex(serverSeed, message) {
+        const key = await subtle().importKey('raw', hexToBytes(serverSeed), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+        return toHex(await subtle().sign('HMAC', key, new TextEncoder().encode(message)))
+      }
+      async function draw13(serverSeed, beacon, label, i) {
+        if (!/^(?:[0-9a-f]{2})*$/.test(beacon)) throw new Error('bad beacon')
+        return (await hmacSha256Hex(serverSeed, `${beacon}:${label}:${i}`)).slice(0, 13)
+      }
+      async function uniform(serverSeed, beacon, label, i) {
+        return parseInt(await draw13(serverSeed, beacon, label, i), 16) / R_DENOM
+      }
+      const roundMultiplier = (x) => Math.floor(x * 100 + 0.5) / 100
+      const crashMultiplier = (r, edge = 0.06) => roundMultiplier(Math.max(1.0, (1.0 - edge) / (1.0 - r)))
+
+      // Counting games (vehicle_boundaries). Canonical order — NEVER iterate the
+      // probabilities object; JS key order is not a contract. Append-only forever.
+      const OUTCOME_ORDER = ['under', 'range', 'over', 'jackpot']
+      const WEIGHT_SCALE = 1000000
+      const scaledIndex = (hex13, n) => Number((BigInt('0x' + hex13) * BigInt(n)) >> BigInt(52))
+
+      function weightsPpm(probabilities) {
+        const has = (o) => Object.prototype.hasOwnProperty.call(probabilities, o)
+        const order = OUTCOME_ORDER.filter(has)
+        const unknown = Object.keys(probabilities).filter((k) => !OUTCOME_ORDER.includes(k)).sort()
+        if (unknown.length) {
+          const e = new Error(`unknown outcome(s) ${JSON.stringify(unknown)}; expected ${JSON.stringify(OUTCOME_ORDER)}`)
+          e.code = 'UNKNOWN_OUTCOME'
+          throw e
+        }
+        const w = order.map((o) => Math.floor(Number(probabilities[o]) * WEIGHT_SCALE + 0.5))
+        const sum = w.reduce((a, b) => a + b, 0)
+        // NEVER renormalise — a table that doesn't sum re-prices every bet.
+        if (sum !== WEIGHT_SCALE) {
+          const e = new Error(`probabilities must sum to 1.0 (${WEIGHT_SCALE} ppm), got ${sum}`)
+          e.code = 'WEIGHT_SUM'
+          throw e
+        }
+        return [order, w]
+      }
+
+      // Integer cumulative buckets — no float touches the decision, so JS/Python/Go agree.
+      function weightedPick(hex13, order, wPpm) {
+        const total = wPpm.reduce((a, b) => a + b, 0)
+        const target = scaledIndex(hex13, total)
+        let cum = 0
+        for (let i = 0; i < order.length; i++) {
+          cum += wPpm[i]
+          if (target < cum) return order[i]
+        }
+        return order[order.length - 1]
+      }
+
+      // Seed -> outcome + boundaries. Every draw is draw13(seed, beacon, LABEL, 0)
+      // — the index is ALWAYS 0 and each branch owns its label, so `draws` ends up
+      // with EXACTLY two entries: "outcome" plus the one branch taken.
+      async function vehicleBoundaries(serverSeed, probabilities, finalCount, { beacon = '', gap = 3 } = {}) {
+        const [order, w] = weightsPpm(probabilities)
+        const hasJackpot = Object.prototype.hasOwnProperty.call(probabilities, 'jackpot')
+        const draws = {}
+        const draw = async (label) => { const h = await draw13(serverSeed, beacon, label, 0); draws[label] = h; return h }
+
+        const outcomeHex = await draw('outcome')
+        const outcome = weightedPick(outcomeHex, order, w)
+        let lowerBound, upperBound
+        if (outcome === 'under') {
+          lowerBound = finalCount + 1 + scaledIndex(await draw('under_offset'), 2)
+          upperBound = lowerBound + gap
+        } else if (outcome === 'over') {
+          upperBound = finalCount - (1 + scaledIndex(await draw('over_offset'), 2))
+          lowerBound = upperBound - gap
+        } else if (outcome === 'range') {
+          const h = await draw('range_offset')
+          // 4-way range is STRICTLY inside the bounds; 3-way is INCLUSIVE of them.
+          const offset = hasJackpot ? 1 + scaledIndex(h, gap - 1) : scaledIndex(h, gap + 1)
+          lowerBound = finalCount - offset
+          upperBound = lowerBound + gap
+        } else {
+          if (scaledIndex(await draw('jackpot_side'), 2) === 0) { lowerBound = finalCount; upperBound = finalCount + gap }
+          else { lowerBound = finalCount - gap; upperBound = finalCount }
+        }
+        // Clamp invariants, identical to the engine — the PUBLISHED bounds carry them.
+        lowerBound = Math.max(1, lowerBound)
+        upperBound = Math.max(lowerBound + gap, upperBound)
+
+        const total = w.reduce((a, b) => a + b, 0)
+        let cum = 0
+        const buckets = order.map((name, i) => { const from = cum; cum += w[i]; return { name, ppm: w[i], from, to: cum } })
+        return { outcome, lowerBound, upperBound, gap, outcomes: order, weightsPpm: w, draws,
+                 outcomeHex13: outcomeHex, target: scaledIndex(outcomeHex, total), totalPpm: total, buckets }
+      }
+
+      // Marble races (marble_order). A round's result is an ORDERED finishing
+      // list of K names from M entrants, FULLY seed-derived: one "order" draw
+      // picks an index into the k-permutations (equal) or a weighted bucket
+      // (weighted, K==1). permutationsIndex is built EXPLICITLY (not a library
+      // call) so JS/Go/Python enumerate the exact same canonical order.
+      function permutationsIndex(m, k) {
+        if (!(0 < k && k <= m)) { const e = new Error(`need 0 < k <= m, got m=${m} k=${k}`); e.code = 'MARBLE_KM'; throw e }
+        let result = [[]]
+        for (let step = 0; step < k; step++) {
+          const nxt = []
+          for (const prefix of result) for (let i = 0; i < m; i++) if (!prefix.includes(i)) nxt.push(prefix.concat(i))
+          result = nxt
+        }
+        return result
+      }
+
+      // A SINGLE draw13(seed, beacon, "order", 0) decides the whole order.
+      async function marbleOrder(serverSeed, marbles, k, { beacon = '', weightsPpm = null } = {}) {
+        const m = marbles.length
+        if (m === 0) { const e = new Error('marbles must be non-empty'); e.code = 'MARBLE_EMPTY'; throw e }
+        if (!(0 < k && k <= m)) { const e = new Error(`need 0 < k <= m, got m=${m} k=${k}`); e.code = 'MARBLE_KM'; throw e }
+        const draw = await draw13(serverSeed, beacon, 'order', 0)
+        if (weightsPpm !== null && weightsPpm !== undefined) {
+          // Weighted single-winner (K==1 in every live game).
+          if (k !== 1) { const e = new Error(`weighted marble_order supports only k=1, got k=${k}`); e.code = 'MARBLE_WEIGHTED_K'; throw e }
+          if (weightsPpm.length !== m) { const e = new Error(`weights_ppm must be index-aligned to marbles (${weightsPpm.length} vs ${m})`); e.code = 'MARBLE_WEIGHTS_LEN'; throw e }
+          const total = weightsPpm.reduce((a, b) => a + b, 0)
+          // A weight table that doesn't sum to the scale re-prices every bet.
+          if (total !== WEIGHT_SCALE) { const e = new Error(`weights_ppm must sum to ${WEIGHT_SCALE}, got ${total}`); e.code = 'WEIGHT_SUM'; throw e }
+          const index = scaledIndex(draw, WEIGHT_SCALE)
+          let cum = 0, picked = m - 1
+          for (let i = 0; i < weightsPpm.length; i++) { cum += weightsPpm[i]; if (index < cum) { picked = i; break } }
+          let acc = 0
+          const buckets = marbles.map((name, i) => { const from = acc; acc += weightsPpm[i]; return { name, ppm: weightsPpm[i], from, to: acc } })
+          return { order: [marbles[picked]], marbles: [...marbles], k, weightsPpm: [...weightsPpm], draw, index: picked, target: index, totalPpm: total, buckets, weighted: true }
+        }
+        const perms = permutationsIndex(m, k)
+        const index = scaledIndex(draw, perms.length)
+        return { order: perms[index].map((i) => marbles[i]), marbles: [...marbles], k, draw, index, permCount: perms.length, weighted: false }
+      }
+
+      // ── shared input normalisation (identical to src/verify.js) ─────────────
+      // A whitespace-only value is NOT a value. Coercing it is how a verifier
+      // manufactures a false red (Number('  ') === 0 → a 0-step chain walk).
+      const isSupplied = (v) => v != null && String(v).trim() !== ''
+      const trimLower = (v) => String(v).trim().toLowerCase()
+      function intOrNaN(v) {
+        if (!isSupplied(v)) return undefined
+        const s = String(v).trim()
+        if (!/^[+-]?\d+$/.test(s)) return NaN
+        const n = Number(s)
+        return Number.isSafeInteger(n) ? n : NaN
+      }
+      function parseList(v) {
+        if (Array.isArray(v)) return v.map((x) => trimLower(x)).filter((s) => s !== '')
+        if (!isSupplied(v)) return undefined
+        return String(v).split(',').map((s) => s.trim().toLowerCase()).filter((s) => s !== '')
+      }
+
+      // Commitment + chain linkage. Game-agnostic — both verifiers use it.
+      async function verifyCommitment(seed, round) {
+        const v2 = (round.schemeVersion ?? 2) >= 2
+        const recomputedCommitment = v2 ? await sha256Ascii(seed) : await sha256Ascii(`${seed}:${round.nonce ?? ''}`)
+        const observed = isSupplied(round.observedCommitment) ? trimLower(round.observedCommitment) : undefined
+        const commitmentVerified = observed !== undefined ? recomputedCommitment === observed : undefined
+
+        let chainLinksToRoot, walked
+        const idx = intOrNaN(round.chainIndex)
+        const root = isSupplied(round.chainRootHash) ? trimLower(round.chainRootHash) : undefined
+        if (v2 && root && Number.isInteger(idx)) {
+          walked = await walkToRoot(seed, idx)
+          chainLinksToRoot = walked === root
+        }
+        return { v2, recomputedCommitment, observed, commitmentVerified, chainLinksToRoot, walked, root, chainIndex: idx }
+      }
+
+      // Shared input gate: a malformed seed or a supplied-but-garbage chain index
+      // is an honest "can't check", never a verdict.
+      function gateInputs(round) {
+        const seed = String(round.serverSeed || '').trim().toLowerCase()
+        if (!/^[0-9a-f]+$/.test(seed) || seed.length % 2 !== 0) {
+          return { error: 'The revealed seed must be an even-length hex string.' }
+        }
+        const idx = intOrNaN(round.chainIndex)
+        if (idx !== undefined && !(Number.isInteger(idx) && idx >= 0)) {
+          return { error: 'The chain index must be a whole number of 0 or more.' }
+        }
+        return { seed }
+      }
+
+      async function verifyCrashRound(round) {
+        const gate = gateInputs(round)
+        if (gate.error) return { verdict: 'error', game: 'crash', error: gate.error }
+        const seed = gate.seed
+        const beacon = round.beacon ?? ''
+        const c = await verifyCommitment(seed, round)
+
+        const r = c.v2 ? await uniform(seed, beacon, 'crash', 0)
+                       : parseInt((await hmacSha256Hex(seed, round.nonce ?? '')).slice(0, 13), 16) / R_DENOM
+        const heRaw = isSupplied(round.houseEdge) ? Number(round.houseEdge) : 0.06
+        const edge = Number.isFinite(heRaw) ? heRaw : 0.06
+        const multiplier = crashMultiplier(r, edge)
+        const hex13 = Math.floor(r * R_DENOM).toString(16).padStart(13, '0')
+        const published = isSupplied(round.multiplier) ? Number(round.multiplier) : undefined
+        const multiplierMatches = published !== undefined ? multiplier === published : undefined
+
+        // GREEN needs BOTH a matching pre-round commitment AND a reproduced result.
+        let verdict
+        if (c.commitmentVerified === false || multiplierMatches === false || c.chainLinksToRoot === false) verdict = 'mismatch'
+        else if (c.commitmentVerified === true && multiplierMatches === true) verdict = 'verified'
+        else verdict = 'inconclusive'
+
+        return { verdict, game: 'crash', r, hex13, multiplier, publishedMultiplier: published, multiplierMatches,
+                 recomputedCommitment: c.recomputedCommitment, observed: c.observed, commitmentVerified: c.commitmentVerified,
+                 chainLinksToRoot: c.chainLinksToRoot, walked: c.walked, root: c.root, chainIndex: c.chainIndex, houseEdge: edge }
+      }
+
+      async function verifyCountingRound(round) {
+        const err = (error, extra) => ({ verdict: 'error', game: 'vehicle_boundaries', error, ...extra })
+        const gate = gateInputs(round)
+        if (gate.error) return err(gate.error)
+        const seed = gate.seed
+
+        // The final count is a reveal INPUT (measured from the clip), not derived
+        // from the seed — without it nothing can be recomputed.
+        const finalCount = intOrNaN(round.finalCount)
+        if (finalCount === undefined) return err('The final count is required — it is measured from the clip, not derived from the seed.')
+        if (!Number.isInteger(finalCount) || finalCount < 0) return err('The final count must be a whole number of 0 or more.')
+        const gapRaw = intOrNaN(round.gap)
+        const gap = gapRaw === undefined ? 3 : gapRaw
+        if (!Number.isInteger(gap) || gap < 1) return err('The gap must be a whole number of 1 or more.')
+
+        let probabilities
+        if (round.probabilities && typeof round.probabilities === 'object') {
+          probabilities = round.probabilities
+        } else {
+          const names = parseList(round.outcomes)
+          const ppm = parseList(round.weightsPpm)
+          if (!names || !ppm) return err('Supply the round’s outcomes and weightsPpm (e.g. under,range,over,jackpot / 300000,400000,250000,50000).')
+          if (names.length !== ppm.length) return err(`outcomes (${names.length}) and weightsPpm (${ppm.length}) must have the same number of entries.`)
+          const weights = ppm.map((x) => intOrNaN(x))
+          if (weights.some((n) => !Number.isInteger(n) || n < 0)) return err('Every weight must be a whole number of parts-per-million.')
+          const unknown = names.filter((n) => !OUTCOME_ORDER.includes(n))
+          if (unknown.length) return err(`Unknown outcome(s) ${JSON.stringify(unknown)} — this verifier knows ${JSON.stringify(OUTCOME_ORDER)}.`)
+          if (new Set(names).size !== names.length) return err('The outcomes list contains a duplicate.')
+          const sum = weights.reduce((a, b) => a + b, 0)
+          // A table that doesn't sum to 1e6 re-prices every bet — an explicit FAILURE.
+          if (sum !== WEIGHT_SCALE) {
+            return { verdict: 'mismatch', game: 'vehicle_boundaries',
+                     error: `The published weights must sum to ${WEIGHT_SCALE} ppm (1.0); they sum to ${sum}.`,
+                     outcomes: names, publishedWeightsPpm: weights }
+          }
+          probabilities = {}
+          names.forEach((n, i) => { probabilities[n] = weights[i] / WEIGHT_SCALE })
+        }
+
+        const beacon = round.beacon ?? ''
+        const c = await verifyCommitment(seed, round)
+        let d
+        try {
+          d = await vehicleBoundaries(seed, probabilities, finalCount, { beacon, gap })
+        } catch (e) {
+          if (e.code === 'WEIGHT_SUM') return { verdict: 'mismatch', game: 'vehicle_boundaries', error: e.message }
+          return err(e.message)
+        }
+
+        const publishedOutcome = isSupplied(round.outcome) ? trimLower(round.outcome) : undefined
+        const publishedLower = intOrNaN(round.lowerBound)
+        const publishedUpper = intOrNaN(round.upperBound)
+        // ALL THREE must be supplied AND match — a partial match is not a reproduction.
+        const cmp = [[publishedOutcome, d.outcome], [publishedLower, d.lowerBound], [publishedUpper, d.upperBound]]
+        let resultMatches
+        if (cmp.some(([pub, got]) => pub !== undefined && pub !== got)) resultMatches = false
+        else if (cmp.every(([pub]) => pub !== undefined)) resultMatches = true
+
+        let verdict
+        if (c.commitmentVerified === false || resultMatches === false || c.chainLinksToRoot === false) verdict = 'mismatch'
+        else if (c.commitmentVerified === true && resultMatches === true) verdict = 'verified'
+        else verdict = 'inconclusive'
+
+        return { verdict, game: 'vehicle_boundaries', finalCount, gap,
+                 outcome: d.outcome, lowerBound: d.lowerBound, upperBound: d.upperBound,
+                 publishedOutcome, publishedLowerBound: publishedLower, publishedUpperBound: publishedUpper,
+                 outcomeMatches: publishedOutcome === undefined ? undefined : publishedOutcome === d.outcome,
+                 boundsMatch: publishedLower === undefined || publishedUpper === undefined ? undefined
+                   : publishedLower === d.lowerBound && publishedUpper === d.upperBound,
+                 resultMatches, outcomes: d.outcomes, weightsPpm: d.weightsPpm, buckets: d.buckets,
+                 target: d.target, totalPpm: d.totalPpm, outcomeHex13: d.outcomeHex13, draws: d.draws, beacon,
+                 recomputedCommitment: c.recomputedCommitment, observed: c.observed, commitmentVerified: c.commitmentVerified,
+                 chainLinksToRoot: c.chainLinksToRoot, walked: c.walked, root: c.root, chainIndex: c.chainIndex }
+      }
+
+      async function verifyMarbleRound(round) {
+        const err = (error, extra) => ({ verdict: 'error', game: 'marble_order', error, ...extra })
+        const gate = gateInputs(round)
+        if (gate.error) return err(gate.error)
+        const seed = gate.seed
+
+        // The entrant list is required — a verifier can't re-enumerate the
+        // permutations (or the weighted buckets) without it.
+        const marbles = parseList(round.marbles)
+        if (!marbles || marbles.length === 0) return err('Supply the round’s marbles (the entrant names in canonical order).')
+        if (new Set(marbles).size !== marbles.length) return err('The marbles list contains a duplicate.')
+        const m = marbles.length
+
+        const k = intOrNaN(round.k)
+        if (k === undefined) return err('Supply k — the number of finishing places (1 for a single-winner game).')
+        if (!Number.isInteger(k) || !(k >= 1 && k <= m)) return err(`k must be a whole number between 1 and ${m} (the entrant count).`)
+
+        // Weighted single-winner games publish an index-aligned ppm table; equal games omit it.
+        let weightsPpm
+        if (isSupplied(round.weightsPpm) || Array.isArray(round.weightsPpm)) {
+          const raw = parseList(round.weightsPpm)
+          if (!raw || raw.length === 0) return err('The weights (ppm) list is empty — omit it for an equal game, or supply one weight per marble.')
+          const weights = raw.map((x) => intOrNaN(x))
+          if (weights.some((n) => !Number.isInteger(n) || n < 0)) return err('Every weight must be a whole number of parts-per-million.')
+          if (k !== 1) return err('Weighted marble rounds are single-winner only — supply weights only when k = 1.')
+          if (weights.length !== m) return err(`weights (${weights.length}) must be index-aligned to the marbles (${m}).`)
+          const sum = weights.reduce((a, b) => a + b, 0)
+          // A table that doesn't sum to 1e6 re-prices every bet — an explicit FAILURE.
+          if (sum !== WEIGHT_SCALE) {
+            return { verdict: 'mismatch', game: 'marble_order',
+                     error: `The published weights must sum to ${WEIGHT_SCALE} ppm (1.0); they sum to ${sum}.`,
+                     marbles, publishedWeightsPpm: weights }
+          }
+          weightsPpm = weights
+        }
+
+        const beacon = round.beacon ?? ''
+        const c = await verifyCommitment(seed, round)
+        let d
+        try {
+          d = await marbleOrder(seed, marbles, k, { beacon, weightsPpm: weightsPpm ?? null })
+        } catch (e) {
+          if (e.code === 'WEIGHT_SUM') return { verdict: 'mismatch', game: 'marble_order', error: e.message }
+          return err(e.message)
+        }
+
+        const publishedOrder = parseList(round.order)
+        let orderMatches
+        if (publishedOrder !== undefined) {
+          orderMatches = publishedOrder.length === d.order.length && publishedOrder.every((name, i) => name === d.order[i])
+        }
+        // The raw draw and chosen index are also seed-derived — OPTIONAL cross-checks
+        // that VETO green when a supplied value disagrees (never fail open).
+        const publishedIndex = intOrNaN(round.index)
+        const indexMatches = publishedIndex === undefined ? undefined : publishedIndex === d.index
+        const publishedDraw = isSupplied(round.draw) ? trimLower(round.draw) : undefined
+        const drawMatches = publishedDraw === undefined ? undefined : publishedDraw === d.draw
+        // GREEN needs the ORDER reproduced; a disagreeing index or draw is a hard fail.
+        let resultMatches
+        if (orderMatches === false || indexMatches === false || drawMatches === false) resultMatches = false
+        else if (orderMatches === true) resultMatches = true
+
+        let verdict
+        if (c.commitmentVerified === false || resultMatches === false || c.chainLinksToRoot === false) verdict = 'mismatch'
+        else if (c.commitmentVerified === true && resultMatches === true) verdict = 'verified'
+        else verdict = 'inconclusive'
+
+        return { verdict, game: 'marble_order', marbles: d.marbles, k: d.k, weighted: d.weighted, weightsPpm: d.weightsPpm,
+                 order: d.order, publishedOrder, orderMatches, resultMatches, publishedIndex, indexMatches, publishedDraw, drawMatches,
+                 draw: d.draw, index: d.index, permCount: d.permCount, target: d.target, totalPpm: d.totalPpm, buckets: d.buckets, beacon,
+                 recomputedCommitment: c.recomputedCommitment, observed: c.observed, commitmentVerified: c.commitmentVerified,
+                 chainLinksToRoot: c.chainLinksToRoot, walked: c.walked, root: c.root, chainIndex: c.chainIndex }
+      }
+
+      // Dispatcher: `game` ABSENT (or unrecognised) means crash — back-compat.
+      const COUNTING_GAME = 'vehicle_boundaries'
+      const MARBLE_GAME = 'marble_order'
+      async function verifyRound(round) {
+        const g = trimLower(round?.game ?? '')
+        if (g === COUNTING_GAME) return verifyCountingRound(round)
+        if (g === MARBLE_GAME) return verifyMarbleRound(round)
+        return verifyCrashRound(round)
+      }
+
+      // ─── UI ───────────────────────────────────────────────────────────────
+      const $ = (id) => document.getElementById(id)
+      const EXAMPLE = {
+        serverSeed: '6f7081467a4fe6be90f22066336379ea2f20558037e84a030b4626cbafb1025a',
+        observedCommitment: 'd2d41bed3cc891015cb989253a8b009ee85178003677b6099c910ca9937e6879',
+        chainRootHash: 'f22f0e6ace208f306e6f3d186bc18a8632eb64579a19d6c04e9e46ff25760984',
+        chainIndex: 4, houseEdge: 0.06, multiplier: 5.16, beacon: ''
+      }
+      // A counting round example (matching commitment, 4-link chain walked to its root).
+      const EXAMPLE_COUNTING = {
+        game: 'vehicle_boundaries',
+        serverSeed: 'bd1d56780d21fd5b27d74261a9540ad02fb754df919c2b508d5719fec09722b1',
+        observedCommitment: '33daf23ce95a97f41580ae5513701b5d5d2e76d8011eae04b8ddf6dd8c40b0d0',
+        chainRootHash: 'd3d4784b6bb08b03c94ed716696e31674da41ac483404677d79854063486499e',
+        chainIndex: 4, beacon: '', finalCount: 14, gap: 3,
+        outcome: 'under', lowerBound: 16, upperBound: 19,
+        outcomes: 'under,range,over,jackpot', weightsPpm: '250000,500000,200000,50000'
+      }
+      // A marble round example (matching commitment, 3-link chain walked to its root).
+      const EXAMPLE_MARBLE = {
+        game: 'marble_order',
+        serverSeed: 'b39872e6903b1e8bad25274e8d13b1e42e4e35b351822b9d724c6d1296083cfa',
+        observedCommitment: 'a9f136a13257f9d9fba5ec59a969f8c59ce104291084b9d362ab9194ae29f3c0',
+        chainRootHash: '92a662d65b51834501198d3853bd0bf85e5a4803707ac59d3a6c20c5e1e140a2',
+        chainIndex: 3, beacon: '',
+        marbles: 'black,blue,green,orange,red,sky,white,yellow', k: 3,
+        order: 'green,red,white', index: 106, draw: '5142bd05c2e59'
+      }
+      const EXAMPLES = { vehicle_boundaries: EXAMPLE_COUNTING, marble_order: EXAMPLE_MARBLE, crash: EXAMPLE }
+      const GAME_VALUES = ['vehicle_boundaries', 'marble_order']
+      const currentGame = () => (GAME_VALUES.includes($('game').value) ? $('game').value : 'crash')
+      function syncGame() {
+        document.body.dataset.game = currentGame()
+      }
+      function readForm() {
+        // Counting and marble games both use the `weightsPpm` round key but have
+        // their own visible field — pick by the selected game so the hidden one
+        // never leaks in.
+        const weightsPpm = currentGame() === MARBLE_GAME ? $('marbleWeights').value : $('weights').value
+        return {
+          game: $('game').value,
+          serverSeed: $('seed').value, observedCommitment: $('commit').value, chainRootHash: $('root').value,
+          chainIndex: $('idx').value, houseEdge: $('edge').value, multiplier: $('mult').value, beacon: $('beacon').value,
+          finalCount: $('finalCount').value, gap: $('gap').value, outcome: $('outcome').value,
+          lowerBound: $('lower').value, upperBound: $('upper').value,
+          outcomes: $('outcomes').value, weightsPpm,
+          marbles: $('marbles').value, k: $('kplaces').value, order: $('morder').value,
+          index: $('marbleIndex').value, draw: $('marbleDraw').value,
+          schemeVersion: 2
+        }
+      }
+      const csv = (v) => (Array.isArray(v) ? v.join(',') : v ?? '')
+      function writeForm(o) {
+        // Unrecognised / absent game === crash. Never break the original contract.
+        const g = String(o.game ?? '').trim().toLowerCase()
+        const game = GAME_VALUES.includes(g) ? g : ''
+        $('game').value = game
+        syncGame()
+        $('seed').value = o.serverSeed ?? ''
+        $('commit').value = o.observedCommitment ?? o.serverSeedHash ?? o.commitment ?? ''
+        $('root').value = o.chainRootHash ?? ''
+        $('idx').value = o.chainIndex ?? ''
+        $('edge').value = o.houseEdge ?? ''
+        $('mult').value = o.multiplier ?? ''
+        $('beacon').value = o.beacon ?? ''
+        $('finalCount').value = o.finalCount ?? ''
+        $('gap').value = o.gap ?? ''
+        $('outcome').value = o.outcome ?? ''
+        $('lower').value = o.lowerBound ?? ''
+        $('upper').value = o.upperBound ?? ''
+        $('outcomes').value = csv(o.outcomes)
+        // Both counting and marble carry `weightsPpm`; route it to the right field.
+        const w = csv(o.weightsPpm ?? o.weights_ppm)
+        $('weights').value = game === COUNTING_GAME ? w : ''
+        $('marbleWeights').value = game === MARBLE_GAME ? w : ''
+        $('marbles').value = csv(o.marbles)
+        $('kplaces').value = o.k ?? ''
+        $('morder').value = csv(o.order)
+        $('marbleIndex').value = o.index ?? ''
+        $('marbleDraw').value = o.draw ?? ''
+      }
+      // Text-context escaping only (values are rendered inside element text, never
+      // in an attribute), so escaping & < > is sufficient. Full hashes are shown
+      // un-truncated so you can eyeball-compare them; break-all handles the width.
+      const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))
+
+      function stepRow(name, state, detail, kv) {
+        const ic = state === true ? '<span class="s-ic s-ok">✓</span>' : state === false ? '<span class="s-ic s-bad">✕</span>' : '<span class="s-ic s-na">–</span>'
+        const kvHtml = kv ? '<div class="kv">' + kv.map(([k, v, hl]) => `<span class="k">${esc(k)}</span><span class="val ${hl ? 'hl' : ''}">${esc(v)}</span>`).join('') + '</div>' : ''
+        return `<div class="step"><div class="step-head">${ic}<span class="s-name">${esc(name)}</span></div><p class="detail">${detail}</p>${kvHtml}</div>`
+      }
+
+      const RESULT_NAME = {
+        crash: 'result multiplier',
+        vehicle_boundaries: 'outcome and both boundaries',
+        marble_order: 'finishing order'
+      }
+      const VERDICTS = {
+        verified: ['v-verified', '✓', 'Verified', 'You reproduced this round from the commitment that was published before betting closed. The operator could not have known or changed the outcome.'],
+        inconclusive: ['v-inconclusive', '!', 'Recomputed — not fully certified', 'Everything you supplied is consistent. A green verdict needs BOTH the commitment published when betting opened AND the round’s RESULT — then it’s proven the outcome was fixed before you bet and matches what was paid. Add whatever’s missing above.'],
+        mismatch: ['v-mismatch', '✕', 'Mismatch', 'The recomputation does NOT reproduce this round. One of the published values is inconsistent — do not trust it.'],
+        error: ['v-error', '!', 'Can’t check yet', '']
+      }
+
+      // Steps 1 + 2 are game-agnostic — the same commitment and chain proof for
+      // every 155 game. Only the result step differs.
+      function sharedSteps(res) {
+        return [
+          stepRow(
+            '1 — Commitment binds the seed',
+            res.commitmentVerified,
+            res.commitmentVerified === undefined
+              ? 'No round-open commitment supplied. <code>sha256(seed)</code> was computed but there is nothing to compare it to.'
+              : res.commitmentVerified
+              ? 'The commitment published when betting opened equals <code>sha256(seed)</code> — the seed was locked in before you bet.'
+              : 'The commitment does NOT equal <code>sha256(seed)</code>. The revealed seed is not the one that was committed.',
+            [['sha256(seed)', res.recomputedCommitment, true], ['committed', res.observed ?? '— not supplied —']]
+          ),
+          stepRow(
+            '2 — Seed is link #' + (res.chainIndex ?? '?') + ' of the published chain',
+            res.chainLinksToRoot,
+            res.chainLinksToRoot === undefined
+              ? 'No chain root / index supplied, so the seed’s position in the pre-committed chain was not checked.'
+              : res.chainLinksToRoot
+              ? 'Hashing the seed ' + res.chainIndex + '&times; reaches the root that was published before the batch began.'
+              : 'Hashing the seed ' + res.chainIndex + '&times; does NOT reach the published root.',
+            [['sha256^' + (res.chainIndex ?? '?') + '(seed)', res.walked ?? '—', true], ['published root', res.root ?? '— not supplied —']]
+          )
+        ]
+      }
+
+      function crashSteps(res) {
+        return sharedSteps(res).concat(
+          stepRow(
+            '3 — Result derives from the seed',
+            res.multiplierMatches,
+            'HMAC-SHA256 of the seed over <code>:crash:0</code> → first 13 hex → a number in [0,1) → the crash curve.',
+            [['hex (13)', res.hex13, true], ['decimal', res.r.toFixed(15)], ['recomputed', res.multiplier.toFixed(2) + '×', true], ['published', (res.publishedMultiplier ?? '—') + '×']]
+          )
+        )
+      }
+
+      const pct = (ppm) => (ppm / 10000).toFixed(2) + '%'
+
+      function countingSteps(res) {
+        const branch = Object.keys(res.draws).find((k) => k !== 'outcome')
+        const bucketRows = res.buckets.map((b) => [
+          b.name + (b.name === res.outcome ? '  ← picked' : ''),
+          `${b.from}–${b.to - 1}   (${pct(b.ppm)})`,
+          b.name === res.outcome
+        ])
+        const formula = {
+          under: 'lower = count + 1 + [0 or 1] · upper = lower + gap',
+          over: 'upper = count − (1 + [0 or 1]) · lower = upper − gap',
+          range: 'lower = count − offset · upper = lower + gap  (the count lands inside)',
+          jackpot: 'Exact — the count is pinned to a boundary: (count, count+gap) or (count−gap, count)'
+        }[res.outcome]
+        return sharedSteps(res).concat(
+          stepRow(
+            '3 — The winning outcome derives from the seed',
+            res.outcomeMatches,
+            'HMAC-SHA256 of the seed over <code>' + esc(res.beacon) + ':outcome:0</code> → first 13 hex → scaled to the weight total → the integer bucket it lands in. No float touches this decision.',
+            [['hex (13)', res.outcomeHex13, true], ['target', `${res.target}  of ${res.totalPpm} ppm`]].concat(
+              bucketRows,
+              [['recomputed', res.outcome, true], ['published', res.publishedOutcome ?? '— not supplied —']]
+            )
+          ),
+          stepRow(
+            '4 — The boundaries derive from the seed and the count',
+            res.boundsMatch,
+            'The final count is <em>measured from the clip</em> — it is an input here, not a seed value. The offset that places the boundaries around it is the <code>' +
+              esc(branch ?? '—') +
+              '</code> draw: ' + esc(formula ?? '') + '. Then the clamps <code>lower ≥ 1</code> and <code>upper ≥ lower + gap</code>.',
+            [
+              ['final count', res.finalCount],
+              ['gap', res.gap],
+              [branch ? branch + ' hex (13)' : 'branch draw', branch ? res.draws[branch] : '—', true],
+              ['recomputed', `${res.lowerBound} – ${res.upperBound}`, true],
+              ['published', res.publishedLowerBound === undefined || res.publishedUpperBound === undefined
+                ? '— not supplied —'
+                : `${res.publishedLowerBound} – ${res.publishedUpperBound}`]
+            ]
+          )
+        )
+      }
+
+      // Marble races: one seed-derived draw → a finishing ORDER. Step 3 shows the
+      // draw scaled into either the k-permutation count (equal) or the weight
+      // total (weighted), the chosen index, and recomputed vs published result.
+      // Presentation dispatches on k (NEVER the game key): k === 1 is a single
+      // winner — the result IS the winner, so drop the "finishing order" / ordinal
+      // framing and show "Winner: <name>". k > 1 keeps the podium. The verify math
+      // is identical either way — a single order draw picks the K-permutation.
+      function marbleSteps(res) {
+        const M = res.marbles.length
+        const single = res.k === 1
+        const detail =
+          'HMAC-SHA256 of the seed over <code>' + esc(res.beacon) + ':order:0</code> → first 13 hex → ' +
+          (res.weighted
+            ? 'scaled to the weight total → the entrant bucket it lands in. Single winner (k = 1).'
+            : single
+            ? 'scaled to the number of entrants → the winner it lands on.'
+            : 'scaled to the number of possible finishing orders → the index into them.') +
+          ' No float touches this decision.'
+        const kv = [
+          ['entrants (' + M + ')', res.marbles.join(', ')],
+          ['places (k)', res.k],
+          ['draw hex (13)', res.draw, true]
+        ]
+        if (res.weighted) {
+          const winner = res.order[0]
+          kv.push(['target', `${res.target}  of ${res.totalPpm} ppm`])
+          for (const b of res.buckets) {
+            kv.push([b.name + (b.name === winner ? '  ← winner' : ''), `${b.from}–${b.to - 1}   (${pct(b.ppm)})`, b.name === winner])
+          }
+        } else {
+          kv.push(['orderings', `${M}!/(${M}−${res.k})! = ${res.permCount}`])
+          kv.push(['index', `${res.index}  of ${res.permCount}`])
+        }
+        if (res.publishedIndex !== undefined) kv.push(['published index', res.publishedIndex])
+        // k === 1: the order array holds exactly the winner — label it "winner", no
+        // ordinals. join(' · ') on a one-element array renders that single name.
+        kv.push([single ? 'recomputed winner' : 'recomputed order', res.order.join(' · '), true])
+        kv.push([single ? 'published winner' : 'published order', res.publishedOrder ? res.publishedOrder.join(' · ') : '— not supplied —'])
+        return sharedSteps(res).concat(
+          stepRow(
+            single ? '3 — The winner derives from the seed' : '3 — The finishing order derives from the seed',
+            res.resultMatches, detail, kv
+          )
+        )
+      }
+
+      async function run() {
+        const out = $('out')
+        out.innerHTML = '<p class="muted">Recomputing…</p>'
+        let res
+        try {
+          res = await verifyRound(readForm())
+        } catch (e) {
+          out.innerHTML = stepRow('Error', false, esc(e.message))
+          return
+        }
+        if (res.verdict === 'error') {
+          const [cls, ic, title] = VERDICTS.error
+          out.innerHTML = `<div class="verdict ${cls}"><div class="icon">${ic}</div><div><p class="vtitle">${title}</p><p class="vsub muted">${esc(res.error)}</p></div></div>`
+          return
+        }
+        const [cls, ic, title, sub] = VERDICTS[res.verdict]
+        // Result-name in the verdict subtitle also dispatches on k, not the game
+        // key: a single-winner marble round's result is the "winner", not an order.
+        const resultName = res.game === MARBLE_GAME && res.k === 1 ? 'winner' : (RESULT_NAME[res.game] ?? 'result')
+        // A failure found before any recomputation (e.g. weights that don't sum to
+        // 1,000,000 ppm) has no steps to show — state the reason and stop.
+        if (!res.recomputedCommitment) {
+          out.innerHTML = `<div class="verdict ${cls}"><div class="icon">${ic}</div><div><p class="vtitle">${title}</p><p class="vsub">${esc(res.error ?? sub)}</p></div></div>`
+          return
+        }
+        const steps = (
+          res.game === COUNTING_GAME ? countingSteps(res)
+          : res.game === MARBLE_GAME ? marbleSteps(res)
+          : crashSteps(res)
+        ).join('')
+        out.innerHTML =
+          `<div class="verdict ${cls}"><div class="icon">${ic}</div><div><p class="vtitle">${title}</p><p class="vsub">${sub.replace('RESULT', resultName)}</p></div></div>` +
+          `<div class="steps">${steps}</div>`
+      }
+
+      $('verify').addEventListener('click', run)
+      $('game').addEventListener('change', syncGame)
+      $('example').addEventListener('click', () => { writeForm(EXAMPLES[currentGame()]); run() })
+      $('fromPaste').addEventListener('click', () => {
+        try { writeForm(JSON.parse($('paste').value)) } catch (e) { alert('That is not valid JSON: ' + e.message) }
+      })
+      syncGame()
+
+      // Deep-link prefill so a round page can hand off here already filled in, e.g.
+      //   verify.html?serverSeed=…&observedCommitment=…&chainRootHash=…&chainIndex=4&multiplier=5.16&houseEdge=0.06
+      //   verify.html?game=vehicle_boundaries&serverSeed=…&finalCount=14&gap=3&outcome=under
+      //               &lowerBound=16&upperBound=19&outcomes=under,range,over,jackpot
+      //               &weightsPpm=250000,500000,200000,50000
+      //   verify.html?game=marble_order&serverSeed=…&marbles=black,blue,green,orange,red,sky,white,yellow
+      //               &k=3&order=green,red,white&index=106&draw=5142bd05c2e59
+      //               &weightsPpm=471700,377400,94300,47200,9400   (weighted games only)
+      // `game` ABSENT means crash — the original contract, unchanged.
+      // All params are PUBLIC round values (revealed at settlement). Auto-runs when a seed is present.
+      ;(function prefillFromUrl() {
+        const p = new URLSearchParams(location.search)
+        if ([...p.keys()].length === 0) return
+        const g = (k) => (p.has(k) ? p.get(k) : undefined)
+        writeForm({
+          game: g('game'),
+          serverSeed: g('serverSeed'),
+          observedCommitment: g('observedCommitment'),
+          chainRootHash: g('chainRootHash'),
+          chainIndex: g('chainIndex'),
+          beacon: g('beacon'),
+          // crash-only
+          houseEdge: g('houseEdge'),
+          multiplier: g('multiplier'),
+          // counting-only
+          finalCount: g('finalCount'),
+          gap: g('gap'),
+          outcome: g('outcome'),
+          lowerBound: g('lowerBound'),
+          upperBound: g('upperBound'),
+          outcomes: g('outcomes'),
+          weightsPpm: g('weightsPpm'),
+          // marble-only
+          marbles: g('marbles'),
+          k: g('k'),
+          order: g('order'),
+          index: g('index'),
+          draw: g('draw')
+        })
+        if ($('seed').value) run()
+      })()
+    </script>
+  </body>
+</html>

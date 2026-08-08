@@ -1,0 +1,12 @@
+{
+  "_comment": "The SAME round as crash-verified.json but with the result multiplier tampered to 9.99x. The recomputation still produces 5.16x, so the verdict is MISMATCH — this is what a dishonest or corrupted round looks like.",
+  "game": "crash",
+  "schemeVersion": 2,
+  "observedCommitment": "d2d41bed3cc891015cb989253a8b009ee85178003677b6099c910ca9937e6879",
+  "serverSeed": "6f7081467a4fe6be90f22066336379ea2f20558037e84a030b4626cbafb1025a",
+  "chainRootHash": "f22f0e6ace208f306e6f3d186bc18a8632eb64579a19d6c04e9e46ff25760984",
+  "chainIndex": 4,
+  "beacon": "",
+  "houseEdge": 0.06,
+  "multiplier": 9.99
+}
