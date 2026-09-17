@@ -27,9 +27,11 @@ const core = html.slice(start, end)
 // so EVERY new inlined symbol must be added or it silently stops being drift-checked.
 const mod =
   core +
-  '\nexport { verifyCrashRound, verifyCountingRound, verifyMarbleRound, verifyRound, uniform, sha256Ascii, walkToRoot,' +
+  '\nexport { verifyCrashRound, verifyCountingRound, verifyMarbleRound, verifyBirdieRound, verifyRound, uniform, sha256Ascii, walkToRoot,' +
   ' crashMultiplier, draw13, vehicleBoundaries, weightsPpm, weightedPick, scaledIndex,' +
-  ' permutationsIndex, marbleOrder, OUTCOME_ORDER, WEIGHT_SCALE }\n'
+  ' permutationsIndex, marbleOrder, OUTCOME_ORDER, WEIGHT_SCALE,' +
+  ' PATTERNS, BIRDIE_OPTIONS, BIRDIE_RTP_PPM, BIRDIE_MARGIN, ROUND_TYPES, patternWeightsPpm, countPpm, birdieBoard,' +
+  ' paytableHash, hashTerm, cataloguePreimage, catalogueHash, birdieCard, roundTypeDraw, drawRoundType }\n'
 
 const tmp = join(here, '.inline-extract.mjs')
 writeFileSync(tmp, mod)
@@ -104,9 +106,49 @@ try {
     eq(`inline marble[${v.note}] draw`, got.draw, v.draw)
   }
 
+  // the shipped birdie example must verify green through the INLINED code
+  const bex = JSON.parse(readFileSync(join(root, 'examples', 'birdie-verified.json'), 'utf8'))
+  const bout = await m.verifyRound(bex)
+  eq('inline birdie example verdict', bout.verdict, 'verified')
+  eq('inline birdie example pattern', bout.pattern, 'MMM')
+  eq('inline birdie example round type', bout.roundType, 'frost')
+  eq('inline birdie example card', bout.cardEntryId, 'e02')
+  eq('inline birdie example paytable', bout.paytableMatches, true)
+  eq('inline birdie example commitmentVerified', bout.commitmentVerified, true)
+  eq('inline birdie example chainLinksToRoot', bout.chainLinksToRoot, true)
+
+  // vectors: the inlined birdie mappers must match the engine too
+  const B = JSON.parse(readFileSync(join(root, 'vectors', 'birdie-vectors.json'), 'utf8'))
+  const BAND = JSON.parse(readFileSync(join(root, 'vectors', 'birdie-weights-band.json'), 'utf8'))
+  eq('inline BIRDIE_MARGIN', m.BIRDIE_MARGIN, B.margin)
+  eq('inline PATTERNS', m.PATTERNS.join(','), B.patterns.join(','))
+  eq('inline BIRDIE_OPTIONS', m.BIRDIE_OPTIONS.join(','), B.options.join(','))
+  eq('inline ROUND_TYPES', m.ROUND_TYPES.join(','), B.round_types.join(','))
+  for (const h of B.hash_term_vectors) eq(`inline hashTerm(${h.multiplier})`, m.hashTerm(h.multiplier), h.term)
+  for (const v of B.boards) {
+    const b = m.birdieBoard(v.make_rate_ppm)
+    eq(`inline birdie board[${v.make_rate_ppm}] weights`, b.weightsPpm.join(','), v.weights_ppm.join(','))
+    for (const o of m.BIRDIE_OPTIONS) eq(`inline birdie board[${v.make_rate_ppm}] ${o}`, b.multipliers[o], v.multipliers[o])
+    eq(`inline birdie board[${v.make_rate_ppm}] preimage`, b.paytablePreimage, v.paytable_preimage)
+    eq(`inline birdie board[${v.make_rate_ppm}] hash`, await m.paytableHash(v.make_rate_ppm), v.paytable_hash)
+  }
+  let bandMiss = 0
+  for (const [ppm, weights] of Object.entries(BAND)) if (m.patternWeightsPpm(Number(ppm)).join(',') !== weights.join(',')) bandMiss++
+  eq('inline birdie weights band', bandMiss, 0)
+  const d = B.draws
+  eq('inline birdie catalogueHash', await m.catalogueHash(d.catalogue_entries), d.catalogue_hash)
+  const card = await m.birdieCard(d.server_seed, d.catalogue_entries)
+  eq('inline birdie card', `${card.draw}/${card.entryId}/${card.index}`, `${d.card_draw}/${d.card_entry_id}/${d.card_index}`)
+  const ord = await m.marbleOrder(d.server_seed, d.outcome_for_make_rate_300000.marbles, 1, { weightsPpm: m.patternWeightsPpm(300000) })
+  eq('inline birdie order', `${ord.draw}/${ord.index}`, `${d.order_draw}/${d.outcome_for_make_rate_300000.index}`)
+  for (const v of B.round_type_vectors) {
+    const r = await m.drawRoundType(v.server_seed, v.weights_ppm)
+    eq(`inline birdie round_type[${v.note}]`, `${r.draw}/${r.roundType}`, `${v.draw}/${v.round_type}`)
+  }
+
   // the inlined verifier must reach the SAME verdicts as src/ on every edge case
   // (this is where src and verify.html previously drifted).
-  const { CASES, COUNTING_CASES, MARBLE_CASES, DISPATCH_CASES } = await import(
+  const { CASES, COUNTING_CASES, MARBLE_CASES, BIRDIE_CASES, DISPATCH_CASES } = await import(
     pathToFileURL(join(here, 'verdict.mjs')).href
   )
   for (const [name, round, want] of CASES) {
@@ -117,6 +159,9 @@ try {
   }
   for (const [name, round, want] of MARBLE_CASES) {
     eq(`inline verdict: ${name}`, (await m.verifyMarbleRound(round)).verdict, want)
+  }
+  for (const [name, round, want] of BIRDIE_CASES) {
+    eq(`inline verdict: ${name}`, (await m.verifyBirdieRound(round)).verdict, want)
   }
   for (const [name, round, want] of DISPATCH_CASES) {
     eq(`inline verdict: ${name}`, (await m.verifyRound(round)).verdict, want)

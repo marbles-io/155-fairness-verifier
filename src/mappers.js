@@ -268,3 +268,159 @@ export async function marbleOrder(serverSeed, marbles, k, { beacon = '', weights
     weighted: false
   }
 }
+
+// ── birdie (golf putting, dynamic odds) ──────────────────────────────────────
+// A Birdie round is THREE independent domain-separated draws over one committed
+// seed, each under its own label at index 0:
+//
+//   card       draw13(seed, "", "card", 0)        -> which catalogue entry priced the round
+//   order      draw13(seed, "", "order", 0)       -> which of the 8 putt patterns happened
+//   round_type draw13(seed, "", "round_type", 0)  -> plain / frost / fire (the side market)
+//
+// Birdie has no beacon: every draw uses the empty beacon. The pattern draw IS
+// marbleOrder(k=1, weighted)
+// over the eight pattern marbles; what Birdie adds is that the WEIGHTS are not a
+// fixed table but a function of the card's make rate — so a verifier recomputes
+// them, and the paytable hash that bound the prices, from `make_rate_ppm`.
+// Locked by vectors/birdie-vectors.json and vectors/birdie-weights-band.json.
+
+// Canonical pattern order — the draw universe and the weights_ppm order. Never reorder.
+export const PATTERNS = ['HHH', 'HHM', 'HMH', 'MHH', 'HMM', 'MHM', 'MMH', 'MMM']
+// The ten priced options: four counts, then the six bettable exact patterns (HHH/MMM are not bettable).
+export const BIRDIE_OPTIONS = ['IN3', 'IN2', 'IN1', 'IN0', 'HHM', 'HMH', 'MHH', 'HMM', 'MHM', 'MMH']
+export const BIRDIE_RTP_PPM = 950000
+// ONE literal on every side (engine, Go, here): 1e6/950000 - 1 = 0.05263157894736836.
+export const BIRDIE_MARGIN = 1e6 / BIRDIE_RTP_PPM - 1
+export const BIRDIE_MIN_MAKE_RATE_PPM = 150000
+export const BIRDIE_MAX_MAKE_RATE_PPM = 850000
+// The side-market outcomes, canonical order. `none` is plain (not bettable) and present so the weights sum.
+export const ROUND_TYPES = ['none', 'frost', 'fire']
+
+export function clampMakeRate(makeRatePpm) {
+  return Math.max(BIRDIE_MIN_MAKE_RATE_PPM, Math.min(BIRDIE_MAX_MAKE_RATE_PPM, makeRatePpm))
+}
+
+// make rate -> the eight pattern weights (ppm, PATTERNS order), summing to exactly 1e6.
+// p^h (1-p)^(3-h) per pattern by EXPLICIT PRODUCTS (never pow: pow differs by an ulp
+// between V8, CPython and Go, and an ulp can move the largest-remainder unit), scaled
+// to ppm, floored, and the shortfall handed to the largest fractional remainders with
+// an index tie-break (Hamilton). The game's Go and Python implementations compute
+// the same integers at every make rate in the band; vectors/birdie-weights-band.json
+// pins 701 of them.
+export function patternWeightsPpm(makeRatePpm) {
+  const p = clampMakeRate(makeRatePpm) / 1e6
+  const q = 1 - p
+  const scaled = [
+    p * p * p * 1000000,
+    p * p * q * 1000000, p * p * q * 1000000, p * p * q * 1000000,
+    p * q * q * 1000000, p * q * q * 1000000, p * q * q * 1000000,
+    q * q * q * 1000000
+  ]
+  const floors = scaled.map((x) => Math.floor(x))
+  let remainder = WEIGHT_SCALE - floors.reduce((a, b) => a + b, 0)
+  const order = [0, 1, 2, 3, 4, 5, 6, 7].sort((a, b) => {
+    const fa = scaled[a] - floors[a]
+    const fb = scaled[b] - floors[b]
+    if (fa !== fb) return fb - fa // larger remainder first
+    return a - b // ties -> lowest index
+  })
+  for (let i = 0; i < remainder && i < 8; i++) floors[order[i]]++
+  return floors
+}
+
+// The count market's four probabilities, each the sum of its patterns.
+export function countPpm(weightsPpm) {
+  const w = Object.fromEntries(PATTERNS.map((p, i) => [p, weightsPpm[i]]))
+  return { IN3: w.HHH, IN2: w.HHM + w.HMH + w.MHH, IN1: w.HMM + w.MHM + w.MMH, IN0: w.MMM }
+}
+
+// The exact multiplier the platform pays for an option of probability `ppm`: 1 / (p (1 + margin)). Never rounded here.
+export function birdieMultiplier(ppm) {
+  return 1 / ((ppm / 1e6) * (1 + BIRDIE_MARGIN))
+}
+
+// The paytable hashes the DISPLAY value x100 as an integer, half-up on the exact float —
+// floor(m*100 + 0.5) — the round_multiplier convention pinned in vectors/fairness-vectors.json. NEVER Math.round / toFixed.
+export function hashTerm(m) {
+  return Math.floor(m * 100 + 0.5)
+}
+
+// make rate -> the whole priced board and the preimage of the hash that bound it at round open.
+export function birdieBoard(makeRatePpm) {
+  const weightsPpm = patternWeightsPpm(makeRatePpm)
+  const counts = countPpm(weightsPpm)
+  const per = { ...counts }
+  PATTERNS.forEach((p, i) => {
+    if (BIRDIE_OPTIONS.includes(p)) per[p] = weightsPpm[i]
+  })
+  const multipliers = Object.fromEntries(BIRDIE_OPTIONS.map((o) => [o, birdieMultiplier(per[o])]))
+  const paytablePreimage =
+    `${BIRDIE_RTP_PPM}|` + weightsPpm.join(',') + '|' + BIRDIE_OPTIONS.map((o) => hashTerm(multipliers[o])).join(',')
+  return { makeRatePpm: clampMakeRate(makeRatePpm), weightsPpm, countPpm: counts, optionPpm: per, multipliers, paytablePreimage }
+}
+
+// sha256 of the ASCII preimage — the value published as `paytable_hash`.
+export async function paytableHash(makeRatePpm) {
+  return core.sha256Ascii(birdieBoard(makeRatePpm).paytablePreimage)
+}
+
+// The catalogue commitment: exactly the five fields that price a round, one row per entry,
+// rows sorted by entry_id, joined by "\n" — never presentation fields (names, headshots).
+export function cataloguePreimage(entries) {
+  const rows = [...entries].sort((a, b) => (a.entry_id < b.entry_id ? -1 : a.entry_id > b.entry_id ? 1 : 0))
+  return rows.map((e) => `${e.entry_id}|${e.golfer_id}|${e.location_id}|${e.make_rate_ppm}|${e.weight_ppm}`).join('\n')
+}
+
+export async function catalogueHash(entries) {
+  return core.sha256Ascii(cataloguePreimage(entries))
+}
+
+// Seed -> which catalogue entry priced the round. A weighted pick over the entries IN THE
+// ORDER GIVEN (the engine's eligible list is sorted by entry_id) with their weight_ppm.
+export async function birdieCard(serverSeed, entries) {
+  if (!entries.length) {
+    const e = new Error('catalogue must be non-empty')
+    e.code = 'CATALOGUE_EMPTY'
+    throw e
+  }
+  const ids = entries.map((e) => e.entry_id)
+  const w = entries.map((e) => e.weight_ppm)
+  const draw = await core.draw13(serverSeed, '', 'card', 0)
+  const entryId = weightedPick(draw, ids, w)
+  const index = ids.indexOf(entryId)
+  const total = w.reduce((a, b) => a + b, 0)
+  let acc = 0
+  const buckets = entries.map((e, i) => {
+    const from = acc
+    acc += w[i]
+    return { name: e.entry_id, ppm: w[i], from, to: acc }
+  })
+  return { draw, index, entryId, entry: entries[index], makeRatePpm: entries[index].make_rate_ppm, target: scaledIndex(draw, total), totalPpm: total, buckets }
+}
+
+// The side-market draw, its own label so it is independent of the card and the pattern.
+export async function roundTypeDraw(serverSeed) {
+  return core.draw13(serverSeed, '', 'round_type', 0)
+}
+
+// Seed + the published weights -> plain / frost / fire. The names are ROUND_TYPES order
+// restricted to the keys present, exactly as the engine builds them.
+export async function drawRoundType(serverSeed, weightsByName) {
+  const names = ROUND_TYPES.filter((n) => Object.prototype.hasOwnProperty.call(weightsByName, n))
+  const w = names.map((n) => weightsByName[n])
+  const total = w.reduce((a, b) => a + b, 0)
+  if (!names.length || total <= 0 || w.some((x) => x < 0)) {
+    const e = new Error(`round_type weights must be non-negative and sum above zero, got ${JSON.stringify(weightsByName)}`)
+    e.code = 'ROUND_TYPE_WEIGHTS'
+    throw e
+  }
+  const draw = await roundTypeDraw(serverSeed)
+  const roundType = weightedPick(draw, names, w)
+  let acc = 0
+  const buckets = names.map((name, i) => {
+    const from = acc
+    acc += w[i]
+    return { name, ppm: w[i], from, to: acc }
+  })
+  return { draw, roundType, names, weightsPpm: w, target: scaledIndex(draw, total), totalPpm: total, buckets }
+}

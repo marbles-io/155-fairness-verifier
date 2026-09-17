@@ -32,6 +32,7 @@ node examples/verify-example.mjs                        # the bundled example ro
 node examples/verify-example.mjs examples/crash-mismatch.json      # a tampered round → MISMATCH
 node examples/verify-example.mjs examples/counting-verified.json   # a counting round → VERIFIED
 node examples/verify-example.mjs examples/marble-verified.json     # a marble race → VERIFIED
+node examples/verify-example.mjs examples/birdie-verified.json     # a Birdie Time round → VERIFIED
 npm test                                                # re-run all golden vectors
 ```
 
@@ -92,6 +93,24 @@ not a pass — this verifier fails **closed**.
 | `weights_ppm` | fixed / public | **weighted single-winner games only** — one weight per marble, summing to `1000000` |
 | `index` / `draw` | at settlement | the chosen permutation index and raw 13-hex draw — both seed-derived, optional cross-checks |
 
+**Birdie Time** (`game=birdie`) — a marble race whose weights are not a fixed table but a function
+of the round's **make rate**, plus two more seed-derived draws — adds:
+
+| Value | Published | Meaning |
+|---|---|---|
+| `marbles` | when betting opens | the eight pattern entries, canonical order `HHH, HHM, HMH, MHH, HMM, MHM, MMH, MMM` (H = holed, M = missed, per putt) |
+| `order` | at settlement | the winning pattern's entry — the result the count and exact markets pay on |
+| `make_rate_ppm` | when betting opens | the card's per-putt make chance; **every price is a function of it** |
+| `paytable_hash` | when betting opens | `sha256` of the priced board — binds the prices you saw to the make rate |
+| `weights_ppm` / `index` / `draw` | at settlement | the pattern weights (recomputed from the make rate either way), the chosen index and the raw `order` draw — optional cross-checks |
+| `round_type` | at settlement | `none` (plain) \| `frost` \| `fire` — the result the round-type side market pays on |
+| `round_types_ppm` | fixed / public | the three round-type weights, e.g. `none:715000,frost:190000,fire:95000` — needed to recompute `round_type` (three integers in `none,frost,fire` order are accepted too) |
+| `round_type_draw` | at settlement | the raw 13-hex `round_type` draw — optional cross-check |
+| `card_draw` | at settlement | the raw 13-hex `card` draw — which catalogue entry priced the round |
+| `card_index` / `catalogue_hash` / `catalogue_size` | at settlement | the drawn entry's index in the published catalogue, the catalogue's hash and its eligible size — checkable only with the **catalogue** (below) |
+| `catalogue_version` | at settlement | which published catalogue registry row the round drew from — the one to paste as `catalogue` |
+| `catalogue` | published per version | the catalogue registry row's `entries` — paste it to bind the make rate to the seed |
+
 ---
 
 ## Deep-linking into `verify.html`
@@ -114,6 +133,12 @@ verify.html
   &marbles=black,blue,green,orange,red,sky,white,yellow&k=3&order=green,red,white
   &index=106&draw=5142bd05c2e59
   # …weighted single-winner games add &weightsPpm=471700,377400,94300,47200,9400 (k=1)
+  # Birdie Time:
+  &game=birdie
+  &marbles=<8 pattern ids>&makeRatePpm=500000&order=<winning id>&paytableHash=<64 hex>   # observedOrder is accepted for order
+  &roundType=frost&roundTypeDraw=bee16e4749787&roundTypesPpm=none:715000,frost:190000,fire:95000
+  &cardDraw=758f351ff7aa2&cardIndex=1&catalogueHash=<64 hex>&catalogueSize=3
+  # …plus the optional index / draw / weightsPpm cross-checks; the catalogue itself is pasted, not linked
 ```
 
 `game` is the only discriminator. **Absent (or anything unrecognised) means crash**,
@@ -329,6 +354,90 @@ positions — plus the commitment, exactly as for crash. A published `index` or 
 with the recomputation is a MISMATCH; for distinct marbles the order and the index determine each
 other, so this can never contradict itself.
 
+## Birdie Time (`game=birdie`)
+
+A Birdie round is **three independent draws over one committed seed**, each under its own label at
+index `0` and with the **empty beacon** (Birdie has none):
+
+```
+card_draw       = draw13(seed, "", "card", 0)          # which catalogue entry priced the round
+order_draw      = draw13(seed, "", "order", 0)         # which of the 8 putt patterns happened
+round_type_draw = draw13(seed, "", "round_type", 0)    # plain / frost / fire (the side market)
+```
+
+Steps 1 and 2 (commitment, chain) are identical to crash. What is new is that the pattern's weights
+are not a published table but a **function of the make rate**, so a verifier recomputes them:
+
+### A. The board from the make rate
+
+`p = clamp(make_rate_ppm, 150000, 850000) / 1e6`, `q = 1 − p`. The eight pattern weights in
+`PATTERNS` order are `p³, p²q, p²q, p²q, pq², pq², pq², q³`, taken to integer ppm by
+largest-remainder apportionment with an index tie-break:
+
+```
+scaled = [p*p*p, p*p*q, p*p*q, p*p*q, p*q*q, p*q*q, p*q*q, q*q*q] × 1_000_000   # EXPLICIT products, never pow()
+floors = floor(each)
+give the (1_000_000 − sum(floors)) leftover units to the largest fractional parts; ties → lowest index
+```
+
+⚠ **Multiply, never `pow`.** `pow()` differs by an ulp between engines, and one ulp can move the
+leftover unit between patterns. The game's own implementations and this one agree at every make rate
+in the band; [`vectors/birdie-weights-band.json`](vectors/birdie-weights-band.json) pins 701 of them.
+
+Every priced option pays `1 / (p_option · (1 + margin))` at RTP `950000` ppm
+(`margin = 1e6/950000 − 1 = 0.05263157894736836`, one literal on every side). The ten priced options,
+in this order, are
+
+```
+OPTIONS = (IN3, IN2, IN1, IN0, HHM, HMH, MHH, HMM, MHM, MMH)   # four counts, then the six bettable patterns
+IN3 = HHH        IN2 = HHM + HMH + MHH        IN1 = HMM + MHM + MMH        IN0 = MMM
+```
+
+`HHH` and `MMM` are never priced: they are the patterns that make the exact market sum to one. The
+paytable hash that was published at round open is
+
+```
+preimage = "950000|<8 weights in PATTERNS order, comma-joined>|<10 terms in OPTIONS order, comma-joined>"
+term     = floor(multiplier × 100 + 0.5)                # half-up on the exact float — never round()
+paytable_hash = sha256(preimage)                       # ASCII, like the chain
+```
+
+Recomputing it from the make rate proves the prices you saw came from this board.
+
+### B. The pattern
+
+Exactly the weighted single-winner marble draw above: `marble_order(seed, marbles, 1, weights_ppm)`
+at label `order` — `target = scaled_index(order_draw, 1_000_000)`, walk the cumulative pattern
+buckets. The result the count and exact markets settle on.
+
+### C. The round type
+
+`weighted_pick(round_type_draw, names, weights)` where `names` is `none, frost, fire` restricted to
+the keys present in the published `round_types_ppm`, and the target is scaled to the **actual** weight
+sum. A published `frost` or `fire` with no weights to recompute it from is **not** green — a paid
+result nobody checked is not a verified round. A published `none` with no weights (a round with no
+side market) has nothing to check and does not block.
+
+### D. The card
+
+`weighted_pick(card_draw, entry_ids, weight_ppm)` over the published catalogue's **eligible** entries
+sorted by `entry_id`. The catalogue commitment is
+
+```
+catalogue_hash = sha256( "\n".join( f"{entry_id}|{golfer_id}|{location_id}|{make_rate_ppm}|{weight_ppm}"  for each ELIGIBLE entry, sorted by entry_id ) )
+```
+
+— exactly the five fields that price a round, never presentation, over the eligible entries only
+(`catalogue_size` is that same count; a registry row marks the others `eligible: false`). With the catalogue supplied the
+verifier checks the hash, the drawn index **and that the drawn card's `make_rate_ppm` is the make rate
+the board was priced from** — the binding that turns "given the published make rate" into "from the
+seed". Without it, `card_draw` is still recomputed and compared, and the make rate is taken as
+published; the report says so.
+
+VERIFIED requires the commitment, the recomputed pattern to equal the published one, and every
+published value that *can* be checked to check out (weights, paytable hash, index, draws, round type,
+card index, catalogue hash and size). Any one of them disagreeing is a MISMATCH.
+
 ### Other games
 
 `verify.js` is game-agnostic: steps 1–3 are shared, and each game supplies only its step-4
@@ -357,6 +466,12 @@ gap. The `marble_order` block covers equal podium (`k=3`) and single-winner (`k=
 weighted single-winner tables, a non-empty beacon, the `k==m` full-permutation edge and the
 single-entrant forced win.
 
+[`vectors/birdie-vectors.json`](vectors/birdie-vectors.json) is the Birdie contract — generated by the
+game engine and shared with the backend: four priced boards with every multiplier bit-equal, the
+half-up hash terms, the catalogue hash, and the card / order / round-type draws on one seed (three
+labels, three different values). [`vectors/birdie-weights-band.json`](vectors/birdie-weights-band.json)
+is the 701-point make-rate band table.
+
 `npm test` runs every vector against `src/` **and** against the copy inlined in `verify.html`, so
 the two can never disagree.
 
@@ -367,15 +482,19 @@ the two can never disagree.
 ```
 verify.html                 self-contained browser verifier (inlines src/)
 src/core.js                 SHA-256 chain, HMAC draw, uniform  (no deps)
-src/mappers.js              r → crash multiplier; counting weights + boundaries; marble order
+src/mappers.js              r → crash multiplier; counting weights + boundaries; marble order;
+                            birdie board / paytable hash / card / round type
 src/verify.js               game-agnostic verifier + verifyCrashRound() + verifyCountingRound()
-                            + verifyMarbleRound() + verifyRound() dispatcher
+                            + verifyMarbleRound() + verifyBirdieRound() + verifyRound() dispatcher
 vectors/fairness-vectors.json   the cross-language golden contract
+vectors/birdie-vectors.json     the Birdie contract (engine-generated)
+vectors/birdie-weights-band.json  the 701-point make-rate band table
 test/run.mjs                runs the vectors against src/
 test/verdict.mjs            verdict + input-handling edge cases (shared with the inline check)
 test/check-inline.mjs       runs the vectors AND every verdict case against verify.html's copy
 examples/                   a VERIFIED crash round, a MISMATCH round, a VERIFIED counting
-                            round, a VERIFIED marble round, and a CLI runner (dispatches on `game`)
+                            round, a VERIFIED marble round, a VERIFIED birdie round, and a CLI
+                            runner (dispatches on `game`)
 ```
 
 No build step, no dependencies, MIT-licensed. Read it, run it, port it.

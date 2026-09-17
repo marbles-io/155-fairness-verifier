@@ -57,6 +57,7 @@
       body:not([data-game="crash"]) .row-commit { grid-template-columns: 1fr; }
       body:not([data-game="vehicle_boundaries"]) .counting-only { display: none; }
       body:not([data-game="marble_order"]) .marble-only { display: none; }
+      body:not([data-game="birdie"]) .birdie-only { display: none; }
       .btns { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
       button {
         font: 600 14px system-ui; border-radius: 8px; padding: 10px 18px; cursor: pointer;
@@ -124,6 +125,7 @@
             <option value="">CCTV crash — multiplier curve (Footfall)</option>
             <option value="vehicle_boundaries">CCTV counting — boundaries (Rush Hour, Snow Run, Duck River…)</option>
             <option value="marble_order">Classic games — winner (Plinko, Snake, Coin Flip…)</option>
+            <option value="birdie">Birdie Time — putt pattern, round type and card (golf)</option>
           </select>
         </div>
         <div class="field">
@@ -178,6 +180,34 @@
           <label for="morder">Published finishing order — 1st, 2nd, … comma-separated</label>
           <input id="morder" spellcheck="false" placeholder="blue,sky,red" />
         </div>
+        <div class="field birdie-only">
+          <label for="bMarbles">Pattern marbles — the eight entries in HHH, HHM, HMH, MHH, HMM, MHM, MMH, MMM order</label>
+          <input id="bMarbles" spellcheck="false" placeholder="m-HHH,m-HHM,m-HMH,m-MHH,m-HMM,m-MHM,m-MMH,m-MMM" />
+        </div>
+        <div class="row3 birdie-only">
+          <div class="field">
+            <label for="bMakeRate">Make rate (ppm) — the card’s per-putt make chance</label>
+            <input id="bMakeRate" spellcheck="false" placeholder="500000" />
+          </div>
+          <div class="field">
+            <label for="bOrder">Published pattern — the winning marble</label>
+            <input id="bOrder" spellcheck="false" placeholder="m-MMM" />
+          </div>
+          <div class="field">
+            <label for="bRoundType">Published round type <span class="hint">(blank = not checked)</span></label>
+            <input id="bRoundType" spellcheck="false" placeholder="none · frost · fire" />
+          </div>
+        </div>
+        <div class="row birdie-only">
+          <div class="field">
+            <label for="bPaytable">Published paytable hash — bound the prices at round open</label>
+            <input id="bPaytable" spellcheck="false" placeholder="468afe9bc9be…" />
+          </div>
+          <div class="field">
+            <label for="bRoundTypesPpm">Round-type weights (ppm) — name:ppm pairs</label>
+            <input id="bRoundTypesPpm" spellcheck="false" placeholder="none:715000,frost:190000,fire:95000" />
+          </div>
+        </div>
         <div class="row">
           <div class="field">
             <label for="root">Chain root — published before the batch</label>
@@ -189,7 +219,7 @@
           </div>
         </div>
         <details>
-          <summary>Advanced (house edge / outcome weights, beacon, scheme)</summary>
+          <summary>Advanced (house edge / outcome weights, beacon, scheme, catalogue)</summary>
           <div class="row">
             <div class="field crash-only">
               <label for="edge">House edge</label>
@@ -223,6 +253,46 @@
               <label for="marbleDraw">Published draw — 13-hex <span class="hint">(optional cross-check)</span></label>
               <input id="marbleDraw" spellcheck="false" placeholder="5142bd05c2e59" />
             </div>
+          </div>
+          <div class="field birdie-only">
+            <label for="bWeights">Published pattern weights (ppm) <span class="hint">(optional cross-check — recomputed from the make rate either way)</span></label>
+            <input id="bWeights" spellcheck="false" placeholder="125000,125000,125000,125000,125000,125000,125000,125000" />
+          </div>
+          <div class="row3 birdie-only">
+            <div class="field">
+              <label for="bIndex">Published pattern index <span class="hint">(optional)</span></label>
+              <input id="bIndex" spellcheck="false" placeholder="7" />
+            </div>
+            <div class="field">
+              <label for="bDraw">Published order draw — 13-hex <span class="hint">(optional)</span></label>
+              <input id="bDraw" spellcheck="false" placeholder="e3683ddb85d3f" />
+            </div>
+            <div class="field">
+              <label for="bRoundTypeDraw">Published round-type draw — 13-hex <span class="hint">(optional)</span></label>
+              <input id="bRoundTypeDraw" spellcheck="false" placeholder="bee16e4749787" />
+            </div>
+          </div>
+          <div class="row3 birdie-only">
+            <div class="field">
+              <label for="bCardDraw">Published card draw — 13-hex <span class="hint">(optional)</span></label>
+              <input id="bCardDraw" spellcheck="false" placeholder="758f351ff7aa2" />
+            </div>
+            <div class="field">
+              <label for="bCardIndex">Published card index <span class="hint">(checked with the catalogue)</span></label>
+              <input id="bCardIndex" spellcheck="false" placeholder="1" />
+            </div>
+            <div class="field">
+              <label for="bCatSize">Published catalogue size <span class="hint">(checked with the catalogue)</span></label>
+              <input id="bCatSize" spellcheck="false" placeholder="3" />
+            </div>
+          </div>
+          <div class="field birdie-only">
+            <label for="bCatHash">Published catalogue hash <span class="hint">(checked with the catalogue)</span></label>
+            <input id="bCatHash" spellcheck="false" placeholder="7f1c0b9d89b0…" />
+          </div>
+          <div class="field birdie-only">
+            <label for="bCatalogue">Catalogue — paste the published registry row (or its <code>entries</code>) to bind the make rate to the seed</label>
+            <textarea id="bCatalogue" spellcheck="false" placeholder='[{"entry_id":"e01","golfer_id":"g_tom","location_id":"l_bangsaen","make_rate_ppm":300000,"weight_ppm":333334}, …]'></textarea>
           </div>
           <div class="field" style="margin-bottom: 0">
             <label for="paste">…or paste the round JSON to fill every field</label>
@@ -409,6 +479,92 @@
       // ── shared input normalisation (identical to src/verify.js) ─────────────
       // A whitespace-only value is NOT a value. Coercing it is how a verifier
       // manufactures a false red (Number('  ') === 0 → a 0-step chain walk).
+      // ── birdie (golf putting, dynamic odds) ──────────────────────────────
+      // Three independent draws over one committed seed, each under its own
+      // label at index 0 with the EMPTY beacon (Birdie has none):
+      //   card        draw13(seed,'','card',0)       -> which catalogue entry priced the round
+      //   order       draw13(seed,'','order',0)      -> which of the 8 putt patterns happened
+      //   round_type  draw13(seed,'','round_type',0) -> plain / frost / fire (the side market)
+      // The pattern draw IS marbleOrder(k=1, weighted); the weights are a function
+      // of the card's make rate, so they — and the paytable hash — are recomputed.
+      const PATTERNS = ['HHH', 'HHM', 'HMH', 'MHH', 'HMM', 'MHM', 'MMH', 'MMM']
+      const BIRDIE_OPTIONS = ['IN3', 'IN2', 'IN1', 'IN0', 'HHM', 'HMH', 'MHH', 'HMM', 'MHM', 'MMH']
+      const BIRDIE_RTP_PPM = 950000
+      const BIRDIE_MARGIN = 1e6 / BIRDIE_RTP_PPM - 1 // 0.05263157894736836 — one literal on every side
+      const BIRDIE_MIN_MAKE_RATE_PPM = 150000
+      const BIRDIE_MAX_MAKE_RATE_PPM = 850000
+      const ROUND_TYPES = ['none', 'frost', 'fire']
+      const clampMakeRate = (ppm) => Math.max(BIRDIE_MIN_MAKE_RATE_PPM, Math.min(BIRDIE_MAX_MAKE_RATE_PPM, ppm))
+      // make rate -> 8 pattern weights (ppm) summing to 1e6. EXPLICIT products (never
+      // pow), scaled, floored, remainder to the largest fractions, index tie-break.
+      // Pinned to the 701-point band table the game itself is tested against.
+      function patternWeightsPpm(makeRatePpm) {
+        const p = clampMakeRate(makeRatePpm) / 1e6
+        const q = 1 - p
+        const scaled = [p * p * p * 1000000, p * p * q * 1000000, p * p * q * 1000000, p * p * q * 1000000,
+                        p * q * q * 1000000, p * q * q * 1000000, p * q * q * 1000000, q * q * q * 1000000]
+        const floors = scaled.map((x) => Math.floor(x))
+        const remainder = WEIGHT_SCALE - floors.reduce((a, b) => a + b, 0)
+        const order = [0, 1, 2, 3, 4, 5, 6, 7].sort((a, b) => {
+          const fa = scaled[a] - floors[a]
+          const fb = scaled[b] - floors[b]
+          if (fa !== fb) return fb - fa
+          return a - b
+        })
+        for (let i = 0; i < remainder && i < 8; i++) floors[order[i]]++
+        return floors
+      }
+      function countPpm(weightsPpm) {
+        const w = Object.fromEntries(PATTERNS.map((p, i) => [p, weightsPpm[i]]))
+        return { IN3: w.HHH, IN2: w.HHM + w.HMH + w.MHH, IN1: w.HMM + w.MHM + w.MMH, IN0: w.MMM }
+      }
+      const birdieMultiplier = (ppm) => 1 / ((ppm / 1e6) * (1 + BIRDIE_MARGIN))
+      const hashTerm = (m) => Math.floor(m * 100 + 0.5) // half-up on the exact float, NEVER Math.round
+      function birdieBoard(makeRatePpm) {
+        const weightsPpm = patternWeightsPpm(makeRatePpm)
+        const counts = countPpm(weightsPpm)
+        const per = { ...counts }
+        PATTERNS.forEach((p, i) => { if (BIRDIE_OPTIONS.includes(p)) per[p] = weightsPpm[i] })
+        const multipliers = Object.fromEntries(BIRDIE_OPTIONS.map((o) => [o, birdieMultiplier(per[o])]))
+        const paytablePreimage = `${BIRDIE_RTP_PPM}|` + weightsPpm.join(',') + '|' + BIRDIE_OPTIONS.map((o) => hashTerm(multipliers[o])).join(',')
+        return { makeRatePpm: clampMakeRate(makeRatePpm), weightsPpm, countPpm: counts, optionPpm: per, multipliers, paytablePreimage }
+      }
+      const paytableHash = async (makeRatePpm) => sha256Ascii(birdieBoard(makeRatePpm).paytablePreimage)
+      // The catalogue commitment: the five pricing fields per entry, rows sorted by entry_id, joined by newline.
+      function cataloguePreimage(entries) {
+        const rows = [...entries].sort((a, b) => (a.entry_id < b.entry_id ? -1 : a.entry_id > b.entry_id ? 1 : 0))
+        return rows.map((e) => `${e.entry_id}|${e.golfer_id}|${e.location_id}|${e.make_rate_ppm}|${e.weight_ppm}`).join('\n')
+      }
+      const catalogueHash = async (entries) => sha256Ascii(cataloguePreimage(entries))
+      async function birdieCard(serverSeed, entries) {
+        if (!entries.length) { const e = new Error('catalogue must be non-empty'); e.code = 'CATALOGUE_EMPTY'; throw e }
+        const ids = entries.map((e) => e.entry_id)
+        const w = entries.map((e) => e.weight_ppm)
+        const draw = await draw13(serverSeed, '', 'card', 0)
+        const entryId = weightedPick(draw, ids, w)
+        const index = ids.indexOf(entryId)
+        const total = w.reduce((a, b) => a + b, 0)
+        let acc = 0
+        const buckets = entries.map((e, i) => { const from = acc; acc += w[i]; return { name: e.entry_id, ppm: w[i], from, to: acc } })
+        return { draw, index, entryId, entry: entries[index], makeRatePpm: entries[index].make_rate_ppm, target: scaledIndex(draw, total), totalPpm: total, buckets }
+      }
+      const roundTypeDraw = (serverSeed) => draw13(serverSeed, '', 'round_type', 0)
+      async function drawRoundType(serverSeed, weightsByName) {
+        const names = ROUND_TYPES.filter((n) => Object.prototype.hasOwnProperty.call(weightsByName, n))
+        const w = names.map((n) => weightsByName[n])
+        const total = w.reduce((a, b) => a + b, 0)
+        if (!names.length || total <= 0 || w.some((x) => x < 0)) {
+          const e = new Error(`round_type weights must be non-negative and sum above zero, got ${JSON.stringify(weightsByName)}`)
+          e.code = 'ROUND_TYPE_WEIGHTS'
+          throw e
+        }
+        const draw = await roundTypeDraw(serverSeed)
+        const roundType = weightedPick(draw, names, w)
+        let acc = 0
+        const buckets = names.map((name, i) => { const from = acc; acc += w[i]; return { name, ppm: w[i], from, to: acc } })
+        return { draw, roundType, names, weightsPpm: w, target: scaledIndex(draw, total), totalPpm: total, buckets }
+      }
+
       const isSupplied = (v) => v != null && String(v).trim() !== ''
       const trimLower = (v) => String(v).trim().toLowerCase()
       function intOrNaN(v) {
@@ -631,13 +787,196 @@
                  chainLinksToRoot: c.chainLinksToRoot, walked: c.walked, root: c.root, chainIndex: c.chainIndex }
       }
 
+      // Round-type weights: "none:715000,frost:190000,fire:95000", three ints in
+      // ROUND_TYPES order, or a {none,frost,fire} object -> { weights } | { error }.
+      function parseRoundTypesPpm(v) {
+        if (v != null && typeof v === 'object' && !Array.isArray(v)) {
+          if (Object.keys(v).length === 0) return { weights: undefined } // a round with no side market publishes {}
+          const weights = {}
+          for (const [k, x] of Object.entries(v)) {
+            const n = intOrNaN(x)
+            if (!Number.isInteger(n) || n < 0) return { error: `round-type weight for "${k}" must be a whole number of parts-per-million.` }
+            weights[trimLower(k)] = n
+          }
+          return { weights }
+        }
+        const items = parseList(v)
+        if (items === undefined) return { weights: undefined }
+        if (items.length === 0) return { error: 'The round-type weights list is empty.' }
+        const weights = {}
+        if (items.every((s) => s.includes(':'))) {
+          for (const item of items) {
+            const parts = item.split(':').map((x) => x.trim())
+            if (parts.length !== 2 || parts[0] === '') return { error: `Round-type weights must be name:ppm pairs; got "${item}".` }
+            const [name, ppm] = parts
+            const n = intOrNaN(ppm)
+            if (!Number.isInteger(n) || n < 0) return { error: `round-type weight for "${name}" must be a whole number of parts-per-million.` }
+            if (Object.prototype.hasOwnProperty.call(weights, name)) return { error: `Round type "${name}" is listed twice.` }
+            weights[name] = n
+          }
+        } else {
+          if (items.length !== ROUND_TYPES.length) return { error: `Supply the round-type weights as name:ppm pairs, or exactly ${ROUND_TYPES.length} whole numbers in ${ROUND_TYPES.join(', ')} order.` }
+          for (let i = 0; i < items.length; i++) {
+            const n = intOrNaN(items[i])
+            if (!Number.isInteger(n) || n < 0) return { error: 'Every round-type weight must be a whole number of parts-per-million.' }
+            weights[ROUND_TYPES[i]] = n
+          }
+        }
+        const unknown = Object.keys(weights).filter((k) => !ROUND_TYPES.includes(k))
+        if (unknown.length) return { error: `Unknown round type(s) ${JSON.stringify(unknown)}; expected ${JSON.stringify(ROUND_TYPES)}.` }
+        return { weights }
+      }
+      // The published catalogue: the registry row's `entries` (or the row), as an
+      // array or JSON string. Only ELIGIBLE entries take part -> { entries } | { error }.
+      function parseCatalogue(v) {
+        if (!isSupplied(v) && !Array.isArray(v) && (v == null || typeof v !== 'object')) return { entries: undefined }
+        let data = v
+        if (typeof v === 'string') {
+          try { data = JSON.parse(v) } catch (e) { return { error: 'The catalogue is not valid JSON: ' + e.message } }
+        }
+        if (data && !Array.isArray(data) && typeof data === 'object') data = data.entries
+        if (!Array.isArray(data)) return { error: 'The catalogue must be a JSON array of entries (or a registry row with an `entries` array).' }
+        const entries = []
+        for (const e of data) {
+          if (!e || typeof e !== 'object') return { error: 'Every catalogue entry must be an object.' }
+          if (e.eligible === false) continue
+          const mr = intOrNaN(e.make_rate_ppm)
+          const w = intOrNaN(e.weight_ppm)
+          if (!isSupplied(e.entry_id) || !isSupplied(e.golfer_id) || !isSupplied(e.location_id) || !Number.isInteger(mr) || !Number.isInteger(w) || w < 0) {
+            return { error: `Catalogue entry ${JSON.stringify(e.entry_id ?? '?')} needs entry_id, golfer_id, location_id, make_rate_ppm and weight_ppm.` }
+          }
+          entries.push({ entry_id: String(e.entry_id).trim(), golfer_id: String(e.golfer_id).trim(), location_id: String(e.location_id).trim(), make_rate_ppm: mr, weight_ppm: w })
+        }
+        if (entries.length === 0) return { error: 'The catalogue has no eligible entries.' }
+        if (new Set(entries.map((e) => e.entry_id)).size !== entries.length) return { error: 'The catalogue contains a duplicate entry_id.' }
+        entries.sort((a, b) => (a.entry_id < b.entry_id ? -1 : a.entry_id > b.entry_id ? 1 : 0))
+        return { entries }
+      }
+
+      // Birdie: pattern (marbleOrder k=1 weighted by the make rate), round type (its
+      // own draw), card (its own draw, checkable with the catalogue) and the paytable
+      // hash. VERIFIED = commitment + pattern reproduced + everything published that
+      // CAN be checked checks out; a published round type nobody could recompute blocks green.
+      async function verifyBirdieRound(round) {
+        const err = (error) => ({ verdict: 'error', game: 'birdie', error })
+        const gate = gateInputs(round)
+        if (gate.error) return err(gate.error)
+        const seed = gate.seed
+
+        const marbles = parseList(round.marbles)
+        if (!marbles || marbles.length === 0) return err('Supply the round’s marbles — the eight pattern entries in HHH, HHM, HMH, MHH, HMM, MHM, MMH, MMM order.')
+        if (marbles.length !== PATTERNS.length) return err(`A Birdie round has exactly ${PATTERNS.length} pattern marbles; ${marbles.length} were supplied.`)
+        if (new Set(marbles).size !== marbles.length) return err('The marbles list contains a duplicate.')
+
+        const makeRatePpm = intOrNaN(round.makeRatePpm)
+        if (makeRatePpm === undefined) return err('Supply the card’s make rate (make_rate_ppm) — the board is priced from it.')
+        if (!Number.isInteger(makeRatePpm) || makeRatePpm <= 0) return err('The make rate must be a positive whole number of parts-per-million.')
+
+        let publishedWeightsPpm
+        if (isSupplied(round.weightsPpm) || Array.isArray(round.weightsPpm)) {
+          const raw = parseList(round.weightsPpm)
+          if (!raw || raw.length === 0) return err('The weights (ppm) list is empty — omit it, or supply one weight per pattern.')
+          const weights = raw.map((x) => intOrNaN(x))
+          if (weights.some((n) => !Number.isInteger(n) || n < 0)) return err('Every weight must be a whole number of parts-per-million.')
+          if (weights.length !== PATTERNS.length) return err(`weights (${weights.length}) must be index-aligned to the ${PATTERNS.length} patterns.`)
+          publishedWeightsPpm = weights
+        }
+        const rtp = parseRoundTypesPpm(round.roundTypesPpm)
+        if (rtp.error) return err(rtp.error)
+        const publishedRoundType = isSupplied(round.roundType) ? trimLower(round.roundType) : undefined
+        if (publishedRoundType !== undefined && !ROUND_TYPES.includes(publishedRoundType)) return err(`The round type must be one of ${ROUND_TYPES.join(', ')}.`)
+        const cat = parseCatalogue(round.catalogue)
+        if (cat.error) return err(cat.error)
+        const publishedCardIndex = intOrNaN(round.cardIndex)
+        if (publishedCardIndex !== undefined && !(Number.isInteger(publishedCardIndex) && publishedCardIndex >= 0)) return err('The card index must be a whole number of 0 or more.')
+        const publishedCatalogueSize = intOrNaN(round.catalogueSize)
+        if (publishedCatalogueSize !== undefined && !(Number.isInteger(publishedCatalogueSize) && publishedCatalogueSize > 0)) return err('The catalogue size must be a positive whole number.')
+
+        const c = await verifyCommitment(seed, round)
+
+        const board = birdieBoard(makeRatePpm)
+        const recomputedPaytableHash = await paytableHash(makeRatePpm)
+        const weightsMatch = publishedWeightsPpm === undefined ? undefined : publishedWeightsPpm.join(',') === board.weightsPpm.join(',')
+        const publishedPaytableHash = isSupplied(round.paytableHash) ? trimLower(round.paytableHash) : undefined
+        const paytableMatches = publishedPaytableHash === undefined ? undefined : publishedPaytableHash === recomputedPaytableHash
+
+        let d
+        try { d = await marbleOrder(seed, marbles, 1, { beacon: '', weightsPpm: board.weightsPpm }) } catch (e) { return err(e.message) }
+        const publishedOrder = parseList(round.order)
+        let orderMatches
+        if (publishedOrder !== undefined) orderMatches = publishedOrder.length === d.order.length && publishedOrder.every((name, i) => name === d.order[i])
+        const publishedIndex = intOrNaN(round.index)
+        const indexMatches = publishedIndex === undefined ? undefined : publishedIndex === d.index
+        const publishedDraw = isSupplied(round.draw) ? trimLower(round.draw) : undefined
+        const drawMatches = publishedDraw === undefined ? undefined : publishedDraw === d.draw
+
+        const recomputedRoundTypeDraw = await roundTypeDraw(seed)
+        const publishedRoundTypeDraw = isSupplied(round.roundTypeDraw) ? trimLower(round.roundTypeDraw) : undefined
+        const roundTypeDrawMatches = publishedRoundTypeDraw === undefined ? undefined : publishedRoundTypeDraw === recomputedRoundTypeDraw
+        let rt, roundTypeMatches
+        if (rtp.weights !== undefined) {
+          try { rt = await drawRoundType(seed, rtp.weights) } catch (e) {
+            return { verdict: e.code === 'ROUND_TYPE_WEIGHTS' ? 'mismatch' : 'error', game: 'birdie', error: e.message }
+          }
+          if (publishedRoundType !== undefined) roundTypeMatches = publishedRoundType === rt.roundType
+        }
+        const roundTypeUnchecked = publishedRoundType !== undefined && publishedRoundType !== 'none' && rtp.weights === undefined
+
+        const recomputedCardDraw = await draw13(seed, '', 'card', 0)
+        const publishedCardDraw = isSupplied(round.cardDraw) ? trimLower(round.cardDraw) : undefined
+        const cardDrawMatches = publishedCardDraw === undefined ? undefined : publishedCardDraw === recomputedCardDraw
+        const publishedCatalogueHash = isSupplied(round.catalogueHash) ? trimLower(round.catalogueHash) : undefined
+        let card, catalogueHashMatches, catalogueSizeMatches, cardIndexMatches, cardMakeRateMatches, recomputedCatalogueHash
+        if (cat.entries !== undefined) {
+          recomputedCatalogueHash = await catalogueHash(cat.entries)
+          catalogueHashMatches = publishedCatalogueHash === undefined ? undefined : publishedCatalogueHash === recomputedCatalogueHash
+          catalogueSizeMatches = publishedCatalogueSize === undefined ? undefined : publishedCatalogueSize === cat.entries.length
+          try { card = await birdieCard(seed, cat.entries) } catch (e) { return err(e.message) }
+          cardIndexMatches = publishedCardIndex === undefined ? undefined : publishedCardIndex === card.index
+          cardMakeRateMatches = card.makeRatePpm === makeRatePpm
+        }
+
+        const checks = [weightsMatch, paytableMatches, orderMatches, indexMatches, drawMatches, roundTypeMatches, roundTypeDrawMatches,
+          cardDrawMatches, catalogueHashMatches, catalogueSizeMatches, cardIndexMatches, cardMakeRateMatches]
+        const roundTypeSettled =
+          publishedRoundType === undefined || roundTypeMatches === true || (publishedRoundType === 'none' && rtp.weights === undefined)
+        let resultMatches
+        if (checks.some((x) => x === false)) resultMatches = false
+        else if (orderMatches === true && !roundTypeUnchecked && roundTypeSettled) resultMatches = true
+
+        let verdict
+        if (c.commitmentVerified === false || resultMatches === false || c.chainLinksToRoot === false) verdict = 'mismatch'
+        else if (c.commitmentVerified === true && resultMatches === true) verdict = 'verified'
+        else verdict = 'inconclusive'
+
+        return { verdict, game: 'birdie', marbles: d.marbles, k: 1, weighted: true,
+                 makeRatePpm: board.makeRatePpm, publishedMakeRatePpm: makeRatePpm, weightsPpm: board.weightsPpm, publishedWeightsPpm, weightsMatch,
+                 countPpm: board.countPpm, optionPpm: board.optionPpm, multipliers: board.multipliers, paytablePreimage: board.paytablePreimage,
+                 paytableHash: recomputedPaytableHash, publishedPaytableHash, paytableMatches,
+                 order: d.order, pattern: PATTERNS[d.index], publishedOrder, orderMatches, publishedIndex, indexMatches, publishedDraw, drawMatches,
+                 draw: d.draw, index: d.index, target: d.target, totalPpm: d.totalPpm, buckets: d.buckets,
+                 roundTypeDraw: recomputedRoundTypeDraw, publishedRoundTypeDraw, roundTypeDrawMatches,
+                 roundType: rt?.roundType, roundTypeNames: rt?.names, roundTypeWeightsPpm: rt?.weightsPpm, roundTypeTarget: rt?.target,
+                 roundTypeTotalPpm: rt?.totalPpm, roundTypeBuckets: rt?.buckets, publishedRoundType, roundTypeMatches, roundTypeUnchecked,
+                 cardDraw: recomputedCardDraw, publishedCardDraw, cardDrawMatches,
+                 catalogueSupplied: cat.entries !== undefined, catalogueSize: cat.entries?.length, publishedCatalogueSize, catalogueSizeMatches,
+                 catalogueHash: recomputedCatalogueHash, publishedCatalogueHash, catalogueHashMatches,
+                 cardIndex: card?.index, cardEntryId: card?.entryId, cardMakeRatePpm: card?.makeRatePpm, cardTarget: card?.target,
+                 cardTotalPpm: card?.totalPpm, cardBuckets: card?.buckets, publishedCardIndex, cardIndexMatches, cardMakeRateMatches,
+                 resultMatches, beacon: '',
+                 recomputedCommitment: c.recomputedCommitment, observed: c.observed, commitmentVerified: c.commitmentVerified,
+                 chainLinksToRoot: c.chainLinksToRoot, walked: c.walked, root: c.root, chainIndex: c.chainIndex }
+      }
+
       // Dispatcher: `game` ABSENT (or unrecognised) means crash — back-compat.
       const COUNTING_GAME = 'vehicle_boundaries'
       const MARBLE_GAME = 'marble_order'
+      const BIRDIE_GAME = 'birdie'
       async function verifyRound(round) {
         const g = trimLower(round?.game ?? '')
         if (g === COUNTING_GAME) return verifyCountingRound(round)
         if (g === MARBLE_GAME) return verifyMarbleRound(round)
+        if (g === BIRDIE_GAME) return verifyBirdieRound(round)
         return verifyCrashRound(round)
       }
 
@@ -669,8 +1008,30 @@
         marbles: 'black,blue,green,orange,red,sky,white,yellow', k: 3,
         order: 'green,red,white', index: 106, draw: '5142bd05c2e59'
       }
-      const EXAMPLES = { vehicle_boundaries: EXAMPLE_COUNTING, marble_order: EXAMPLE_MARBLE, crash: EXAMPLE }
-      const GAME_VALUES = ['vehicle_boundaries', 'marble_order']
+      // A Birdie round on the golden-vector seed (link 1 of the fairness chain): the
+      // card (e02, make rate 500000), the pattern (MMM) and the round type (frost) all
+      // recompute, and the paytable hash binds the 500000 board.
+      const EXAMPLE_BIRDIE = {
+        game: 'birdie',
+        serverSeed: '56c858f2b088359debfc994ef774b37ecf96871cceb2f132805e7290047d907d',
+        observedCommitment: '9968162c0cfdb6f10d33b847644c3717ae4bc105b186af847c8fc40f8564f6bb',
+        chainRootHash: '9968162c0cfdb6f10d33b847644c3717ae4bc105b186af847c8fc40f8564f6bb',
+        chainIndex: 1,
+        marbles: 'm-HHH,m-HHM,m-HMH,m-MHH,m-HMM,m-MHM,m-MMH,m-MMM', makeRatePpm: 500000,
+        weightsPpm: '125000,125000,125000,125000,125000,125000,125000,125000',
+        paytableHash: '468afe9bc9bee5d15a55c2dc32eefeeddf92d157c86613a59ccd6d8b26bb9bcc',
+        order: 'm-MMM', index: 7, draw: 'e3683ddb85d3f',
+        cardDraw: '758f351ff7aa2', cardIndex: 1, catalogueSize: 3,
+        catalogueHash: '7f1c0b9d89b083d9cf1c06d73541e79ed6d1aec10f35c7192252e92cfe5f86f3',
+        catalogue: JSON.stringify([
+          { entry_id: 'e01', golfer_id: 'g_tom', location_id: 'l_bangsaen', make_rate_ppm: 300000, weight_ppm: 333334 },
+          { entry_id: 'e02', golfer_id: 'g_tom', location_id: 'l_hua_hin', make_rate_ppm: 500000, weight_ppm: 333333 },
+          { entry_id: 'e03', golfer_id: 'g_mai', location_id: 'l_bangsaen', make_rate_ppm: 150000, weight_ppm: 333333 }
+        ], null, 1),
+        roundType: 'frost', roundTypeDraw: 'bee16e4749787', roundTypesPpm: 'none:715000,frost:190000,fire:95000'
+      }
+      const EXAMPLES = { vehicle_boundaries: EXAMPLE_COUNTING, marble_order: EXAMPLE_MARBLE, birdie: EXAMPLE_BIRDIE, crash: EXAMPLE }
+      const GAME_VALUES = ['vehicle_boundaries', 'marble_order', 'birdie']
       const currentGame = () => (GAME_VALUES.includes($('game').value) ? $('game').value : 'crash')
       function syncGame() {
         document.body.dataset.game = currentGame()
@@ -690,6 +1051,19 @@
           marbles: $('marbles').value, k: $('kplaces').value, order: $('morder').value,
           index: $('marbleIndex').value, draw: $('marbleDraw').value,
           schemeVersion: 2
+        }
+      }
+      // Birdie has its own fields (never shares the marble ones, so a hidden value
+      // can never leak across games) and is read as a whole when it is selected.
+      function readBirdieForm(base) {
+        return {
+          ...base,
+          marbles: $('bMarbles').value, makeRatePpm: $('bMakeRate').value, order: $('bOrder').value,
+          roundType: $('bRoundType').value, paytableHash: $('bPaytable').value, roundTypesPpm: $('bRoundTypesPpm').value,
+          weightsPpm: $('bWeights').value, index: $('bIndex').value, draw: $('bDraw').value, roundTypeDraw: $('bRoundTypeDraw').value,
+          cardDraw: $('bCardDraw').value, cardIndex: $('bCardIndex').value, catalogueSize: $('bCatSize').value,
+          catalogueHash: $('bCatHash').value, catalogue: $('bCatalogue').value,
+          k: 1, beacon: ''
         }
       }
       const csv = (v) => (Array.isArray(v) ? v.join(',') : v ?? '')
@@ -716,11 +1090,28 @@
         const w = csv(o.weightsPpm ?? o.weights_ppm)
         $('weights').value = game === COUNTING_GAME ? w : ''
         $('marbleWeights').value = game === MARBLE_GAME ? w : ''
-        $('marbles').value = csv(o.marbles)
-        $('kplaces').value = o.k ?? ''
-        $('morder').value = csv(o.order)
-        $('marbleIndex').value = o.index ?? ''
-        $('marbleDraw').value = o.draw ?? ''
+        $('marbles').value = game === MARBLE_GAME ? csv(o.marbles) : ''
+        $('kplaces').value = game === MARBLE_GAME ? (o.k ?? '') : ''
+        $('morder').value = game === MARBLE_GAME ? csv(o.order) : ''
+        $('marbleIndex').value = game === MARBLE_GAME ? (o.index ?? '') : ''
+        $('marbleDraw').value = game === MARBLE_GAME ? (o.draw ?? '') : ''
+        // birdie
+        const rtp = o.roundTypesPpm ?? o.round_types_ppm
+        $('bMarbles').value = game === BIRDIE_GAME ? csv(o.marbles) : ''
+        $('bMakeRate').value = o.makeRatePpm ?? o.make_rate_ppm ?? ''
+        $('bOrder').value = game === BIRDIE_GAME ? csv(o.order) : ''
+        $('bRoundType').value = o.roundType ?? o.round_type ?? ''
+        $('bPaytable').value = o.paytableHash ?? o.paytable_hash ?? ''
+        $('bRoundTypesPpm').value = rtp != null && typeof rtp === 'object' ? Object.entries(rtp).map(([k, v]) => `${k}:${v}`).join(',') : (rtp ?? '')
+        $('bWeights').value = game === BIRDIE_GAME ? w : ''
+        $('bIndex').value = game === BIRDIE_GAME ? (o.index ?? '') : ''
+        $('bDraw').value = game === BIRDIE_GAME ? (o.draw ?? '') : ''
+        $('bRoundTypeDraw').value = o.roundTypeDraw ?? o.round_type_draw ?? ''
+        $('bCardDraw').value = o.cardDraw ?? o.card_draw ?? ''
+        $('bCardIndex').value = o.cardIndex ?? o.card_index ?? ''
+        $('bCatSize').value = o.catalogueSize ?? o.catalogue_size ?? ''
+        $('bCatHash').value = o.catalogueHash ?? o.catalogue_hash ?? ''
+        $('bCatalogue').value = typeof o.catalogue === 'string' ? o.catalogue : o.catalogue ? JSON.stringify(o.catalogue, null, 1) : ''
       }
       // Text-context escaping only (values are rendered inside element text, never
       // in an attribute), so escaping & < > is sufficient. Full hashes are shown
@@ -736,7 +1127,8 @@
       const RESULT_NAME = {
         crash: 'result multiplier',
         vehicle_boundaries: 'outcome and both boundaries',
-        marble_order: 'finishing order'
+        marble_order: 'finishing order',
+        birdie: 'putt pattern (and round type)'
       }
       const VERDICTS = {
         verified: ['v-verified', '✓', 'Verified', 'You reproduced this round from the commitment that was published before betting closed. The operator could not have known or changed the outcome.'],
@@ -873,12 +1265,82 @@
         )
       }
 
+      // Birdie: four result steps after the shared two. The pattern is the paid
+      // result; the paytable hash, round type and card are the other published facts.
+      function birdieSteps(res) {
+        const pattern = res.order[0]
+        const patternKv = [
+          ['make rate', `${res.makeRatePpm} ppm  (${(res.makeRatePpm / 10000).toFixed(1)}% per putt)`],
+          ['weights (ppm)', PATTERNS.map((p, i) => `${p} ${res.weightsPpm[i]}`).join(' · '), true],
+          ['draw hex (13)', res.draw, true],
+          ['target', `${res.target}  of ${res.totalPpm} ppm`]
+        ]
+        for (const b of res.buckets) patternKv.push([b.name + (b.name === pattern ? '  ← pattern' : ''), `${b.from}–${b.to - 1}   (${pct(b.ppm)})`, b.name === pattern])
+        if (res.publishedIndex !== undefined) patternKv.push(['published index', res.publishedIndex])
+        patternKv.push(['recomputed pattern', `${res.pattern}  (${pattern})`, true])
+        patternKv.push(['published pattern', res.publishedOrder ? res.publishedOrder.join(' · ') : '— not supplied —'])
+        if (res.publishedWeightsPpm !== undefined) patternKv.push(['published weights', res.publishedWeightsPpm.join(',') + (res.weightsMatch ? '  ✓ same' : '  ✕ DIFFER')])
+
+        const priceKv = BIRDIE_OPTIONS.map((o) => [o, `${res.multipliers[o].toFixed(2)}×   (${pct(res.optionPpm[o])})`])
+        priceKv.push(['preimage', res.paytablePreimage])
+        priceKv.push(['sha256(preimage)', res.paytableHash, true])
+        priceKv.push(['published', res.publishedPaytableHash ?? '— not supplied —'])
+
+        const rtKv = [['draw hex (13)', res.roundTypeDraw, true]]
+        if (res.publishedRoundTypeDraw !== undefined) rtKv.push(['published draw', res.publishedRoundTypeDraw])
+        if (res.roundType !== undefined) {
+          rtKv.push(['target', `${res.roundTypeTarget}  of ${res.roundTypeTotalPpm} ppm`])
+          for (const b of res.roundTypeBuckets) rtKv.push([b.name + (b.name === res.roundType ? '  ← type' : ''), `${b.from}–${b.to - 1}   (${pct(b.ppm)})`, b.name === res.roundType])
+          rtKv.push(['recomputed', res.roundType, true])
+        }
+        rtKv.push(['published', res.publishedRoundType ?? '— not supplied —'])
+        const rtState = res.roundTypeUnchecked ? false : (res.publishedRoundType === undefined ? undefined : res.roundTypeMatches)
+        const rtDetail = res.roundTypeUnchecked
+          ? 'A round type was published but no weights were supplied, so it could NOT be recomputed. Add the round-type weights (<code>none:…,frost:…,fire:…</code>) — a paid result nobody checked is not a verified round.'
+          : res.roundType === undefined
+          ? 'No weights were supplied, so nothing was drawn against — a round with no side market. The draw is still shown.'
+          : res.publishedRoundType === undefined
+          ? 'Recomputed from the weights, but no published round type was supplied to compare it with — not checked.'
+          : 'HMAC-SHA256 of the seed over <code>:round_type:0</code> → first 13 hex → scaled to the weight total → the bucket it lands in. Its own label, so it is independent of the pattern and the card.'
+
+        const cardKv = [['draw hex (13)', res.cardDraw, true]]
+        if (res.publishedCardDraw !== undefined) cardKv.push(['published draw', res.publishedCardDraw + (res.cardDrawMatches ? '  ✓' : '  ✕')])
+        let cardState, cardDetail
+        if (res.catalogueSupplied) {
+          cardKv.push(['catalogue', `${res.catalogueSize} eligible entries · sha256 ${res.catalogueHash}`, true])
+          cardKv.push(['published hash', res.publishedCatalogueHash ?? '— not supplied —'])
+          cardKv.push(['target', `${res.cardTarget}  of ${res.cardTotalPpm} ppm`])
+          for (const b of res.cardBuckets) cardKv.push([b.name + (b.name === res.cardEntryId ? '  ← card' : ''), `${b.from}–${b.to - 1}   (${pct(b.ppm)})`, b.name === res.cardEntryId])
+          cardKv.push(['recomputed card', `${res.cardEntryId} (index ${res.cardIndex}) → make rate ${res.cardMakeRatePpm}`, true])
+          cardKv.push(['published index', res.publishedCardIndex ?? '— not supplied —'])
+          cardKv.push(['make rate bound', res.cardMakeRateMatches ? `yes — the drawn card’s make rate is the ${res.makeRatePpm} the board was priced from` : `NO — the drawn card says ${res.cardMakeRatePpm}, the board was priced from ${res.makeRatePpm}`, true])
+          const all = [res.cardDrawMatches, res.catalogueHashMatches, res.catalogueSizeMatches, res.cardIndexMatches, res.cardMakeRateMatches]
+          cardState = all.some((x) => x === false) ? false : true
+          cardDetail = 'HMAC-SHA256 of the seed over <code>:card:0</code> → first 13 hex → scaled to the catalogue’s weight total → the entry it lands in. The catalogue hash is <code>sha256</code> of the five pricing fields per entry, sorted by id — so the make rate the whole board was priced from is bound to the seed.'
+        } else {
+          const unchecked = res.publishedCardIndex !== undefined || res.publishedCatalogueHash !== undefined || res.publishedCatalogueSize !== undefined
+          cardState = res.cardDrawMatches === false ? false : unchecked ? undefined : res.cardDrawMatches
+          if (res.publishedCardIndex !== undefined) cardKv.push(['published index', res.publishedCardIndex + '   (not checked without the catalogue)'])
+          if (res.publishedCatalogueHash !== undefined) cardKv.push(['published catalogue hash', res.publishedCatalogueHash + '   (not checked without the catalogue)'])
+          cardDetail = 'HMAC-SHA256 of the seed over <code>:card:0</code> → first 13 hex. <strong>The make rate was taken as published</strong> — paste the published catalogue (Advanced) to recompute which card was drawn and bind the make rate to the seed.'
+        }
+        return sharedSteps(res).concat(
+          stepRow('3 — The putt pattern derives from the seed and the make rate', res.orderMatches,
+            'The eight pattern weights are <code>p<sup>h</sup>(1−p)<sup>3−h</sup></code> from the make rate — explicit float products, floored to integer ppm with the remainder handed to the largest fractions, pinned by the 701-point band table — then HMAC-SHA256 of the seed over <code>:order:0</code> → first 13 hex → scaled to the weight total → the pattern bucket it lands in. The bucket walk is integer-only.', patternKv),
+          stepRow('4 — The prices were fixed by the same make rate', res.paytableMatches,
+            'Every option pays <code>1 / (p · (1 + margin))</code> at RTP ' + (BIRDIE_RTP_PPM / 10000) + '%. The paytable hash published at round open is <code>sha256("rtp|weights|floor(100·multiplier + 0.5)…")</code>; recomputing it from the make rate proves the prices you saw came from this board.', priceKv),
+          stepRow('5 — The round type derives from the seed', rtState, rtDetail, rtKv),
+          stepRow('6 — The card (which golfer priced the round) derives from the seed', cardState, cardDetail, cardKv)
+        )
+      }
+
       async function run() {
         const out = $('out')
         out.innerHTML = '<p class="muted">Recomputing…</p>'
         let res
         try {
-          res = await verifyRound(readForm())
+          const base = readForm()
+          res = await verifyRound(currentGame() === BIRDIE_GAME ? readBirdieForm(base) : base)
         } catch (e) {
           out.innerHTML = stepRow('Error', false, esc(e.message))
           return
@@ -901,6 +1363,7 @@
         const steps = (
           res.game === COUNTING_GAME ? countingSteps(res)
           : res.game === MARBLE_GAME ? marbleSteps(res)
+          : res.game === BIRDIE_GAME ? birdieSteps(res)
           : crashSteps(res)
         ).join('')
         out.innerHTML =
@@ -924,6 +1387,9 @@
       //   verify.html?game=marble_order&serverSeed=…&marbles=black,blue,green,orange,red,sky,white,yellow
       //               &k=3&order=green,red,white&index=106&draw=5142bd05c2e59
       //               &weightsPpm=471700,377400,94300,47200,9400   (weighted games only)
+      //   verify.html?game=birdie&serverSeed=…&marbles=<8 ids>&makeRatePpm=500000&order=<winning id>   (observedOrder is accepted too)
+      //               &paytableHash=…&roundType=frost&roundTypeDraw=…&roundTypesPpm=none:715000,frost:190000,fire:95000
+      //               &cardDraw=…&cardIndex=1&catalogueHash=…&catalogueSize=3   (+ index, draw, weightsPpm)
       // `game` ABSENT means crash — the original contract, unchanged.
       // All params are PUBLIC round values (revealed at settlement). Auto-runs when a seed is present.
       ;(function prefillFromUrl() {
@@ -948,12 +1414,22 @@
           upperBound: g('upperBound'),
           outcomes: g('outcomes'),
           weightsPpm: g('weightsPpm'),
-          // marble-only
+          // marble-only (and birdie: marbles / order / index / draw / weightsPpm are routed by game)
           marbles: g('marbles'),
           k: g('k'),
-          order: g('order'),
+          order: g('order') ?? g('observedOrder'),
           index: g('index'),
-          draw: g('draw')
+          draw: g('draw'),
+          // birdie-only
+          makeRatePpm: g('makeRatePpm'),
+          paytableHash: g('paytableHash'),
+          roundType: g('roundType'),
+          roundTypeDraw: g('roundTypeDraw'),
+          roundTypesPpm: g('roundTypesPpm'),
+          cardDraw: g('cardDraw'),
+          cardIndex: g('cardIndex'),
+          catalogueHash: g('catalogueHash'),
+          catalogueSize: g('catalogueSize')
         })
         if ($('seed').value) run()
       })()

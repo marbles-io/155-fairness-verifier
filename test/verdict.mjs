@@ -6,7 +6,7 @@
 //
 //   node test/verdict.mjs
 
-import { verifyCrashRound, verifyCountingRound, verifyMarbleRound, verifyRound } from '../src/verify.js'
+import { verifyCrashRound, verifyCountingRound, verifyMarbleRound, verifyBirdieRound, verifyRound } from '../src/verify.js'
 
 // A fully-green example round.
 const GOLD = {
@@ -193,6 +193,105 @@ export const MARBLE_CASES = [
   ['marble whitespace-only chainIndex → verified (NOT a 0-step walk)', mclone({ chainIndex: '  ' }), 'verified']
 ]
 
+// ── birdie (game=birdie) ─────────────────────────────────────────────────────
+// The vector seed (link index 1 of the fairness chain, so chainIndex 1 walks to
+// the root) with every value the reveal publishes, each produced by the game
+// engine itself. The card the seed draws is e02, make rate 500000, so the board
+// here is the 500000 board — a coherent round.
+const BIRDIE_CATALOGUE = [
+  { entry_id: 'e01', golfer_id: 'g_tom', location_id: 'l_bangsaen', make_rate_ppm: 300000, weight_ppm: 333334 },
+  { entry_id: 'e02', golfer_id: 'g_tom', location_id: 'l_hua_hin', make_rate_ppm: 500000, weight_ppm: 333333 },
+  { entry_id: 'e03', golfer_id: 'g_mai', location_id: 'l_bangsaen', make_rate_ppm: 150000, weight_ppm: 333333 }
+]
+const BIRDIE_GOLD = {
+  game: 'birdie',
+  serverSeed: '56c858f2b088359debfc994ef774b37ecf96871cceb2f132805e7290047d907d',
+  observedCommitment: '9968162c0cfdb6f10d33b847644c3717ae4bc105b186af847c8fc40f8564f6bb',
+  chainRootHash: '9968162c0cfdb6f10d33b847644c3717ae4bc105b186af847c8fc40f8564f6bb',
+  chainIndex: 1,
+  marbles: 'm-HHH,m-HHM,m-HMH,m-MHH,m-HMM,m-MHM,m-MMH,m-MMM',
+  makeRatePpm: 500000,
+  weightsPpm: '125000,125000,125000,125000,125000,125000,125000,125000',
+  paytableHash: '468afe9bc9bee5d15a55c2dc32eefeeddf92d157c86613a59ccd6d8b26bb9bcc',
+  order: 'm-MMM',
+  index: 7,
+  draw: 'e3683ddb85d3f',
+  cardDraw: '758f351ff7aa2',
+  cardIndex: 1,
+  catalogueHash: '7f1c0b9d89b083d9cf1c06d73541e79ed6d1aec10f35c7192252e92cfe5f86f3',
+  catalogueSize: 3,
+  catalogue: BIRDIE_CATALOGUE,
+  roundType: 'frost',
+  roundTypeDraw: 'bee16e4749787',
+  roundTypesPpm: 'none:715000,frost:190000,fire:95000'
+}
+const bclone = (o) => ({ ...BIRDIE_GOLD, ...o })
+
+export const BIRDIE_CASES = [
+  ['birdie full round → verified', BIRDIE_GOLD, 'verified'],
+  ['birdie: the deep link (no catalogue pasted) → verified, card provenance simply unchecked', bclone({ catalogue: undefined }), 'verified'],
+  ['birdie: catalogue as a JSON string → verified', bclone({ catalogue: JSON.stringify(BIRDIE_CATALOGUE) }), 'verified'],
+  ['birdie: catalogue as the registry row ({entries}) with an ineligible extra → verified', bclone({ catalogue: { entries: [...BIRDIE_CATALOGUE, { entry_id: 'e99', golfer_id: 'g_x', location_id: 'l_x', make_rate_ppm: 400000, weight_ppm: 0, eligible: false }] } }), 'verified'],
+  ['birdie: catalogue supplied in any order → verified (sorted by entry_id before the draw)', bclone({ catalogue: [...BIRDIE_CATALOGUE].reverse() }), 'verified'],
+  ['birdie: round-type weights as three ints in none,frost,fire order → verified', bclone({ roundTypesPpm: '715000,190000,95000' }), 'verified'],
+  ['birdie: round-type weights as an object → verified', bclone({ roundTypesPpm: { none: 715000, frost: 190000, fire: 95000 } }), 'verified'],
+  ['birdie: arrays instead of csv → verified', bclone({ marbles: BIRDIE_GOLD.marbles.split(','), order: ['m-MMM'], weightsPpm: [125000, 125000, 125000, 125000, 125000, 125000, 125000, 125000] }), 'verified'],
+  ['birdie: UPPERCASE + padded hashes → verified', bclone({ paytableHash: '  ' + BIRDIE_GOLD.paytableHash.toUpperCase() + '  ', cardDraw: BIRDIE_GOLD.cardDraw.toUpperCase(), roundType: ' FROST ' }), 'verified'],
+  ['birdie: a plain (none) round with no round type published → verified', bclone({ roundType: undefined, roundTypeDraw: undefined, roundTypesPpm: undefined }), 'verified'],
+  ['birdie: a round with no side market (round_type none, round_types_ppm {}) → verified, nothing to draw against', bclone({ roundType: 'none', roundTypeDraw: undefined, roundTypesPpm: {} }), 'verified'],
+  ['birdie: round_type none published with no weights → verified (nothing was paid on it)', bclone({ roundType: 'none', roundTypesPpm: undefined }), 'verified'],
+  ['birdie: round_type none published WITH weights that draw frost → mismatch', bclone({ roundType: 'none' }), 'mismatch'],
+  ['birdie: no optional cross-checks at all → verified on commitment + pattern', bclone({ weightsPpm: undefined, paytableHash: undefined, index: undefined, draw: undefined, cardDraw: undefined, cardIndex: undefined, catalogueHash: undefined, catalogueSize: undefined, catalogue: undefined, roundType: undefined, roundTypeDraw: undefined, roundTypesPpm: undefined }), 'verified'],
+  ['birdie: a supplied non-empty beacon is IGNORED (Birdie has none) → verified', bclone({ beacon: 'deadbeef' }), 'verified'],
+  // — explicit failures —
+  ['birdie wrong pattern → mismatch', bclone({ order: 'm-HHH' }), 'mismatch'],
+  ['birdie wrong index (order still correct) → mismatch', bclone({ index: 0 }), 'mismatch'],
+  ['birdie wrong order draw → mismatch', bclone({ draw: '0000000000000' }), 'mismatch'],
+  ['birdie tampered make rate → mismatch (weights, paytable AND card make rate all disagree)', bclone({ makeRatePpm: 300000 }), 'mismatch'],
+  ['birdie tampered make rate, nothing else published → still mismatch via the paytable hash', bclone({ makeRatePpm: 300000, weightsPpm: undefined, catalogue: undefined, cardIndex: undefined }), 'mismatch'],
+  ['birdie published weights that disagree with the make rate → mismatch', bclone({ weightsPpm: '27000,63000,63000,63000,147000,147000,147000,343000' }), 'mismatch'],
+  ['birdie tampered paytable hash → mismatch', bclone({ paytableHash: 'deadbeef'.repeat(8) }), 'mismatch'],
+  ['birdie wrong round type → mismatch', bclone({ roundType: 'fire' }), 'mismatch'],
+  ['birdie wrong round-type draw → mismatch', bclone({ roundTypeDraw: '0000000000000' }), 'mismatch'],
+  ['birdie round-type weights that change the bucket → mismatch', bclone({ roundTypesPpm: 'none:100000,frost:100000,fire:800000' }), 'mismatch'],
+  ['birdie wrong card draw → mismatch', bclone({ cardDraw: '0000000000000' }), 'mismatch'],
+  ['birdie wrong card index (catalogue supplied) → mismatch', bclone({ cardIndex: 0 }), 'mismatch'],
+  ['birdie tampered catalogue (a weight moved) → mismatch via the catalogue hash', bclone({ catalogue: [{ ...BIRDIE_CATALOGUE[0], weight_ppm: 333333 }, { ...BIRDIE_CATALOGUE[1], weight_ppm: 333334 }, BIRDIE_CATALOGUE[2]] }), 'mismatch'],
+  ['birdie catalogue whose drawn card has a different make rate → mismatch', bclone({ catalogue: [BIRDIE_CATALOGUE[0], { ...BIRDIE_CATALOGUE[1], make_rate_ppm: 400000 }, BIRDIE_CATALOGUE[2]], catalogueHash: undefined }), 'mismatch'],
+  ['birdie catalogue size that disagrees → mismatch', bclone({ catalogueSize: 4 }), 'mismatch'],
+  ['birdie tampered commitment → mismatch', bclone({ observedCommitment: 'deadbeef'.repeat(8) }), 'mismatch'],
+  ['birdie tampered chain root → mismatch', bclone({ chainRootHash: 'deadbeef'.repeat(8) }), 'mismatch'],
+  ['birdie zero-sum round-type weights → mismatch (published values fail, never renormalised)', bclone({ roundTypesPpm: 'none:0,frost:0,fire:0' }), 'mismatch'],
+  // — honest "can't check" (never green, never a false accusation) —
+  ['birdie no commitment → inconclusive', bclone({ observedCommitment: undefined }), 'inconclusive'],
+  ['birdie no published pattern → inconclusive (result never cross-checked)', bclone({ order: undefined, index: undefined, draw: undefined }), 'inconclusive'],
+  ['birdie round type published but no weights to recompute it → inconclusive, NOT green', bclone({ roundTypesPpm: undefined }), 'inconclusive'],
+  ['birdie missing marbles → error', bclone({ marbles: undefined }), 'error'],
+  ['birdie seven marbles → error', bclone({ marbles: 'm-HHH,m-HHM,m-HMH,m-MHH,m-HMM,m-MHM,m-MMH' }), 'error'],
+  ['birdie duplicate marble → error', bclone({ marbles: 'm-HHH,m-HHH,m-HMH,m-MHH,m-HMM,m-MHM,m-MMH,m-MMM' }), 'error'],
+  ['birdie missing make rate → error', bclone({ makeRatePpm: undefined }), 'error'],
+  ['birdie fractional make rate → error', bclone({ makeRatePpm: '500000.5' }), 'error'],
+  ['birdie negative make rate → error', bclone({ makeRatePpm: -1 }), 'error'],
+  ['birdie weights length mismatch → error', bclone({ weightsPpm: '125000,125000' }), 'error'],
+  ['birdie non-integer weight → error', bclone({ weightsPpm: '125000,125000,125000,125000,125000,125000,125000,125000.5' }), 'error'],
+  ['birdie unknown round type name → error', bclone({ roundType: 'lava' }), 'error'],
+  ['birdie unknown round-type weight name → error', bclone({ roundTypesPpm: 'none:715000,frost:190000,lava:95000' }), 'error'],
+  ['birdie two bare round-type ints → error (three, in order, or name:ppm)', bclone({ roundTypesPpm: '715000,285000' }), 'error'],
+  ['birdie a name:ppm item with an extra segment → error, never guessed', bclone({ roundTypesPpm: 'none:715000:junk,frost:190000,fire:95000' }), 'error'],
+  ['birdie a round type listed twice → error, never last-wins', bclone({ roundTypesPpm: 'none:1,none:715000,frost:190000,fire:95000' }), 'error'],
+  ['birdie catalogue that is not JSON → error', bclone({ catalogue: '{not json' }), 'error'],
+  ['birdie catalogue entry missing weight_ppm → error', bclone({ catalogue: [{ entry_id: 'e01', golfer_id: 'g', location_id: 'l', make_rate_ppm: 300000 }] }), 'error'],
+  ['birdie catalogue with a duplicate entry_id → error', bclone({ catalogue: [BIRDIE_CATALOGUE[0], BIRDIE_CATALOGUE[0]] }), 'error'],
+  ['birdie catalogue with only ineligible entries → error', bclone({ catalogue: [{ ...BIRDIE_CATALOGUE[0], eligible: false }] }), 'error'],
+  ['birdie fractional card index → error', bclone({ cardIndex: '1.5' }), 'error'],
+  ['birdie non-hex seed → error', bclone({ serverSeed: 'zz'.repeat(32) }), 'error'],
+  ['birdie odd-length seed → error', bclone({ serverSeed: 'abc' }), 'error'],
+  ['birdie garbage chainIndex → error', bclone({ chainIndex: 'one' }), 'error'],
+  ['birdie blank chainIndex → verified (chain not checked, no false-red)', bclone({ chainIndex: '' }), 'verified'],
+  ['birdie whitespace-only chainIndex → verified (NOT a 0-step walk)', bclone({ chainIndex: '  ' }), 'verified']
+]
+export { BIRDIE_GOLD }
+
 // The dispatcher: `game` absent (or anything unrecognised) MUST stay crash.
 export const DISPATCH_CASES = [
   ['dispatch: no game → crash verifier', GOLD, 'verified'],
@@ -205,7 +304,11 @@ export const DISPATCH_CASES = [
   // a counting round handed to the crash path must NOT go green by accident
   ['dispatch: counting round without game= → not verified by the crash path', { ...COUNT_GOLD, game: undefined }, 'inconclusive'],
   // a marble round handed to the crash path must NOT go green by accident
-  ['dispatch: marble round without game= → not verified by the crash path', { ...MARBLE_GOLD, game: undefined }, 'inconclusive']
+  ['dispatch: marble round without game= → not verified by the crash path', { ...MARBLE_GOLD, game: undefined }, 'inconclusive'],
+  ['dispatch: game=birdie → birdie verifier', BIRDIE_GOLD, 'verified'],
+  ['dispatch: game="  BIRDIE  " → birdie verifier', bclone({ game: '  BIRDIE  ' }), 'verified'],
+  // a birdie round handed to the crash path must NOT go green by accident
+  ['dispatch: birdie round without game= → not verified by the crash path', { ...BIRDIE_GOLD, game: undefined }, 'inconclusive']
 ]
 
 async function run() {
@@ -217,9 +320,10 @@ async function run() {
   for (const [name, round, want] of CASES) await one(verifyCrashRound, name, round, want)
   for (const [name, round, want] of COUNTING_CASES) await one(verifyCountingRound, name, round, want)
   for (const [name, round, want] of MARBLE_CASES) await one(verifyMarbleRound, name, round, want)
+  for (const [name, round, want] of BIRDIE_CASES) await one(verifyBirdieRound, name, round, want)
   for (const [name, round, want] of DISPATCH_CASES) await one(verifyRound, name, round, want)
-  const total = CASES.length + COUNTING_CASES.length + MARBLE_CASES.length + DISPATCH_CASES.length
-  console.log(fail ? `\nverdict cases: ${fail} FAILED` : `✓ verdict edge cases (${total}) all correct — crash ${CASES.length}, counting ${COUNTING_CASES.length}, marble ${MARBLE_CASES.length}, dispatch ${DISPATCH_CASES.length}`)
+  const total = CASES.length + COUNTING_CASES.length + MARBLE_CASES.length + BIRDIE_CASES.length + DISPATCH_CASES.length
+  console.log(fail ? `\nverdict cases: ${fail} FAILED` : `✓ verdict edge cases (${total}) all correct — crash ${CASES.length}, counting ${COUNTING_CASES.length}, marble ${MARBLE_CASES.length}, birdie ${BIRDIE_CASES.length}, dispatch ${DISPATCH_CASES.length}`)
   return fail
 }
 

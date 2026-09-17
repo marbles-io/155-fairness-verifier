@@ -1,0 +1,120 @@
+{
+  "spec": "Birdie Time dynamic odds v1 — golden values every implementation must reproduce",
+  "rtp_ppm": 950000,
+  "margin": 0.05263157894736836,
+  "patterns": ["HHH", "HHM", "HMH", "MHH", "HMM", "MHM", "MMH", "MMM"],
+  "options": ["IN3", "IN2", "IN1", "IN0", "HHM", "HMH", "MHH", "HMM", "MHM", "MMH"],
+  "hash_term_rule": "floor(multiplier*100 + 0.5) — half-up on the exact float, never round()/Math.round",
+  "hash_term_vectors": [
+    {"multiplier": 1.125, "term": 113},
+    {"multiplier": 35.18518518518519, "term": 3519},
+    {"multiplier": 2.675, "term": 268},
+    {"multiplier": 0.125, "term": 13},
+    {"multiplier": 2.535, "term": 254},
+    {"multiplier": 2.545, "term": 255}
+  ],
+  "boards": [
+    {
+      "make_rate_ppm": 300000,
+      "weights_ppm": [27000, 63000, 63000, 63000, 147000, 147000, 147000, 343000],
+      "count_ppm": {"IN3": 27000, "IN2": 189000, "IN1": 441000, "IN0": 343000},
+      "multipliers": {"IN3": 35.18518518518519, "IN2": 5.026455026455027, "IN1": 2.1541950113378685, "IN0": 2.769679300291545, "HHM": 15.07936507936508, "HMH": 15.07936507936508, "MHH": 15.07936507936508, "HMM": 6.462585034013606, "MHM": 6.462585034013606, "MMH": 6.462585034013606},
+      "paytable_preimage": "950000|27000,63000,63000,63000,147000,147000,147000,343000|3519,503,215,277,1508,1508,1508,646,646,646",
+      "paytable_hash": "9f952d84fbc62c206085bd0c7b03ef64ceebd5c1475ad58e9535054c27ed03d7"
+    },
+    {
+      "make_rate_ppm": 150000,
+      "weights_ppm": [3375, 19125, 19125, 19125, 108375, 108375, 108375, 614125],
+      "count_ppm": {"IN3": 3375, "IN2": 57375, "IN1": 325125, "IN0": 614125},
+      "multipliers": {"IN3": 281.4814814814815, "IN2": 16.55773420479303, "IN1": 2.921953094963476, "IN0": 1.546916344392428, "HHM": 49.673202614379086, "HMH": 49.673202614379086, "MHH": 49.673202614379086, "HMM": 8.765859284890427, "MHM": 8.765859284890427, "MMH": 8.765859284890427},
+      "paytable_preimage": "950000|3375,19125,19125,19125,108375,108375,108375,614125|28148,1656,292,155,4967,4967,4967,877,877,877",
+      "paytable_hash": "0fdf30784f6175dabb4983f09c8b4b7731914ba05272c5d5876940dd7916ca4c"
+    },
+    {
+      "make_rate_ppm": 500000,
+      "weights_ppm": [125000, 125000, 125000, 125000, 125000, 125000, 125000, 125000],
+      "count_ppm": {"IN3": 125000, "IN2": 375000, "IN1": 375000, "IN0": 125000},
+      "multipliers": {"IN3": 7.6000000000000005, "IN2": 2.533333333333333, "IN1": 2.533333333333333, "IN0": 7.6000000000000005, "HHM": 7.6000000000000005, "HMH": 7.6000000000000005, "MHH": 7.6000000000000005, "HMM": 7.6000000000000005, "MHM": 7.6000000000000005, "MMH": 7.6000000000000005},
+      "paytable_preimage": "950000|125000,125000,125000,125000,125000,125000,125000,125000|760,253,253,760,760,760,760,760,760,760",
+      "paytable_hash": "468afe9bc9bee5d15a55c2dc32eefeeddf92d157c86613a59ccd6d8b26bb9bcc"
+    },
+    {
+      "make_rate_ppm": 850000,
+      "weights_ppm": [614125, 108375, 108375, 108375, 19125, 19125, 19125, 3375],
+      "count_ppm": {"IN3": 614125, "IN2": 325125, "IN1": 57375, "IN0": 3375},
+      "multipliers": {"IN3": 1.546916344392428, "IN2": 2.921953094963476, "IN1": 16.55773420479303, "IN0": 281.4814814814815, "HHM": 8.765859284890427, "HMH": 8.765859284890427, "MHH": 8.765859284890427, "HMM": 49.673202614379086, "MHM": 49.673202614379086, "MMH": 49.673202614379086},
+      "paytable_preimage": "950000|614125,108375,108375,108375,19125,19125,19125,3375|155,292,1656,28148,877,877,877,4967,4967,4967",
+      "paytable_hash": "f97ec70fe089d3d081a481c1bba59b5f92b657bdac28c47d620d0361ed683927"
+    }
+  ],
+  "draws": {
+    "note": "server_seed = link index 1 of the shared fairness vectors chain. card = weighted_pick(draw13(seed,'','card',0)); outcome = marble_order(seed, marbles, 1, weights_ppm) at label 'order'; round_type = weighted_pick(draw13(seed,'','round_type',0), ROUND_TYPES, weights) — three INDEPENDENT labels over one seed.",
+    "server_seed": "56c858f2b088359debfc994ef774b37ecf96871cceb2f132805e7290047d907d",
+    "card_draw": "758f351ff7aa2",
+    "order_draw": "e3683ddb85d3f",
+    "round_type_draw": "bee16e4749787",
+    "catalogue_entries": [
+      {"entry_id": "e01", "golfer_id": "g_tom", "location_id": "l_bangsaen", "make_rate_ppm": 300000, "weight_ppm": 333334},
+      {"entry_id": "e02", "golfer_id": "g_tom", "location_id": "l_hua_hin", "make_rate_ppm": 500000, "weight_ppm": 333333},
+      {"entry_id": "e03", "golfer_id": "g_mai", "location_id": "l_bangsaen", "make_rate_ppm": 150000, "weight_ppm": 333333}
+    ],
+    "catalogue_preimage": "e01|g_tom|l_bangsaen|300000|333334\ne02|g_tom|l_hua_hin|500000|333333\ne03|g_mai|l_bangsaen|150000|333333",
+    "catalogue_hash": "7f1c0b9d89b083d9cf1c06d73541e79ed6d1aec10f35c7192252e92cfe5f86f3",
+    "card_entry_id": "e02",
+    "card_index": 1,
+    "outcome_for_make_rate_300000": {
+      "marbles": ["m-HHH", "m-HHM", "m-HMH", "m-MHH", "m-HMM", "m-MHM", "m-MMH", "m-MMM"],
+      "order": ["m-MMM"],
+      "index": 7
+    },
+    "round_type": {
+      "weights_ppm": {"none": 715000, "frost": 190000, "fire": 95000},
+      "round_type": "frost"
+    }
+  },
+  "round_types": ["none", "frost", "fire"],
+  "round_type_vectors": [
+    {
+      "note": "sha256('56c858f2…:1') -> fire",
+      "server_seed": "ed85cb85d8456515b856ff086aab9ca0d614580e91eb3545b4257caea3ebb41b",
+      "weights_ppm": {"none": 715000, "frost": 190000, "fire": 95000},
+      "draw": "f617e6fce7840",
+      "round_type": "fire"
+    },
+    {
+      "note": "sha256('56c858f2…:2') -> none",
+      "server_seed": "1595ee3d90e585399c119d4111780ec3a835bb8492d4c3bb2d0c8b3068ef81da",
+      "weights_ppm": {"none": 715000, "frost": 190000, "fire": 95000},
+      "draw": "6075fa547cb90",
+      "round_type": "none"
+    },
+    {
+      "note": "sha256('56c858f2…:3') -> none",
+      "server_seed": "a428450dd8727fe88aff239d7db88e7600a36235a06bda89d80531d568c62ada",
+      "weights_ppm": {"none": 715000, "frost": 190000, "fire": 95000},
+      "draw": "1ff77bccc87c8",
+      "round_type": "none"
+    },
+    {
+      "note": "sha256('56c858f2…:4') -> frost",
+      "server_seed": "563eeee31c23d0603ee162c2d0a19450b07f2fa1ace5789d87e99f2ab2abd10d",
+      "weights_ppm": {"none": 715000, "frost": 190000, "fire": 95000},
+      "draw": "d76f702b18909",
+      "round_type": "frost"
+    },
+    {
+      "note": "sha256('56c858f2…:5') -> frost",
+      "server_seed": "e986a39aa9c302c16abfcf1647c4343e94f74eb0f0ee0e974dd3ce4d9706d18e",
+      "weights_ppm": {"none": 715000, "frost": 190000, "fire": 95000},
+      "draw": "d0a02313788ac",
+      "round_type": "frost"
+    },
+    {
+      "note": "sha256('56c858f2…:9') -> fire",
+      "server_seed": "d36c24b5e59060c51384cf3844202dad282481250e99c8579fc1df1aa15dde98",
+      "weights_ppm": {"none": 715000, "frost": 190000, "fire": 95000},
+      "draw": "fa29912c1adf5",
+      "round_type": "fire"
+    }
+  ]
+}

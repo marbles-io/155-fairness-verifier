@@ -1,0 +1,28 @@
+{
+  "_comment": "Synthetic Birdie Time example (illustrative, not a production round; the three-entry catalogue is a test fixture) on the golden-vector seed (link index 1 of the fairness chain, so chainIndex 1 walks to the root). Three independent draws over one committed seed: the card (which golfer priced the round), the pattern (which of the 8 putt patterns happened — the count/exact markets pay on it) and the round type (plain/frost/fire — the side market pays on it). The board is priced from the card's make rate, and the paytable hash bound those prices at round open. Feed it to verify.html or `node examples/verify-example.mjs examples/birdie-verified.json` — it reproduces pattern MMM (index 7), round type frost, card e02 (make rate 500000), the paytable hash, and the verdict is VERIFIED. `catalogue` is where the published registry row's entries go; without it the card draw is still recomputed and the make rate is taken as published.",
+  "game": "birdie",
+  "schemeVersion": 2,
+  "observedCommitment": "9968162c0cfdb6f10d33b847644c3717ae4bc105b186af847c8fc40f8564f6bb",
+  "serverSeed": "56c858f2b088359debfc994ef774b37ecf96871cceb2f132805e7290047d907d",
+  "chainRootHash": "9968162c0cfdb6f10d33b847644c3717ae4bc105b186af847c8fc40f8564f6bb",
+  "chainIndex": 1,
+  "marbles": "m-HHH,m-HHM,m-HMH,m-MHH,m-HMM,m-MHM,m-MMH,m-MMM",
+  "makeRatePpm": 500000,
+  "weightsPpm": "125000,125000,125000,125000,125000,125000,125000,125000",
+  "paytableHash": "468afe9bc9bee5d15a55c2dc32eefeeddf92d157c86613a59ccd6d8b26bb9bcc",
+  "order": "m-MMM",
+  "index": 7,
+  "draw": "e3683ddb85d3f",
+  "cardDraw": "758f351ff7aa2",
+  "cardIndex": 1,
+  "catalogueHash": "7f1c0b9d89b083d9cf1c06d73541e79ed6d1aec10f35c7192252e92cfe5f86f3",
+  "catalogueSize": 3,
+  "catalogue": [
+    { "entry_id": "e01", "golfer_id": "g_tom", "location_id": "l_bangsaen", "make_rate_ppm": 300000, "weight_ppm": 333334 },
+    { "entry_id": "e02", "golfer_id": "g_tom", "location_id": "l_hua_hin", "make_rate_ppm": 500000, "weight_ppm": 333333 },
+    { "entry_id": "e03", "golfer_id": "g_mai", "location_id": "l_bangsaen", "make_rate_ppm": 150000, "weight_ppm": 333333 }
+  ],
+  "roundType": "frost",
+  "roundTypeDraw": "bee16e4749787",
+  "roundTypesPpm": "none:715000,frost:190000,fire:95000"
+}

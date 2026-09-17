@@ -3,6 +3,7 @@
 //   node examples/verify-example.mjs examples/crash-mismatch.json
 //   node examples/verify-example.mjs examples/counting-verified.json
 //   node examples/verify-example.mjs examples/marble-verified.json
+//   node examples/verify-example.mjs examples/birdie-verified.json
 //   node examples/verify-example.mjs path/to/your-round.json
 //
 // The game is taken from the round's `game` field — absent means crash.
@@ -10,7 +11,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { verifyRound, COUNTING_GAME, MARBLE_GAME } from '../src/verify.js'
+import { verifyRound, COUNTING_GAME, MARBLE_GAME, BIRDIE_GAME } from '../src/verify.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const file = process.argv[2] || join(here, 'crash-verified.json')
@@ -38,6 +39,18 @@ if (r.game === COUNTING_GAME) {
   line('published', r.publishedOrder ? r.publishedOrder.join(' · ') : '—')
   line('result match', yesNo(r.resultMatches))
   line('order draw', `${r.draw} → index ${r.index}${r.weighted ? ` of ${r.totalPpm} ppm` : ` of ${r.permCount}`}`)
+} else if (r.game === BIRDIE_GAME) {
+  line('make rate', `${r.publishedMakeRatePpm} ppm  (${(r.makeRatePpm / 10000).toFixed(1)}% per putt${r.makeRatePpm !== r.publishedMakeRatePpm ? `, priced at the band edge ${r.makeRatePpm}` : ''}${r.catalogueSupplied ? ', bound to the catalogue' : ', as published — paste the catalogue to bind it'})`)
+  line('recomputed', `${r.pattern}  (${r.order[0]})`)
+  line('published', r.publishedOrder ? r.publishedOrder.join(' · ') : '—')
+  line('order draw', `${r.draw} → index ${r.index} of ${r.totalPpm} ppm`)
+  line('paytable hash', yesNo(r.paytableMatches) + '   ' + r.paytableHash)
+  line('round type', r.roundType === undefined
+    ? (r.publishedRoundType ? `${r.publishedRoundType} published — NOT recomputed (no weights supplied)` : 'plain (none published)')
+    : `${r.roundType}  ← draw ${r.roundTypeDraw}   published ${r.publishedRoundType ?? '—'}   ${yesNo(r.roundTypeMatches)}`)
+  line('card draw', `${r.cardDraw}   ${yesNo(r.cardDrawMatches)}`)
+  if (r.catalogueSupplied) line('card', `${r.cardEntryId} (index ${r.cardIndex}, make rate ${r.cardMakeRatePpm})   catalogue hash ${yesNo(r.catalogueHashMatches)}`)
+  line('result match', yesNo(r.resultMatches))
 } else {
   line('recomputed', r.multiplier.toFixed(2) + '×')
   line('published', (r.publishedMultiplier ?? '—') + '×')

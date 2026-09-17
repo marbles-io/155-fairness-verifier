@@ -3,7 +3,10 @@
 // deriveR and supplies only its r -> result mapping (crash below).
 
 import * as core from './core.js'
-import { crashMultiplier, vehicleBoundaries, marbleOrder, OUTCOME_ORDER, WEIGHT_SCALE } from './mappers.js'
+import {
+  crashMultiplier, vehicleBoundaries, marbleOrder, OUTCOME_ORDER, WEIGHT_SCALE,
+  PATTERNS, ROUND_TYPES, birdieBoard, paytableHash, catalogueHash, birdieCard, roundTypeDraw, drawRoundType
+} from './mappers.js'
 
 const R_DENOM = 2 ** 52
 
@@ -11,6 +14,7 @@ const R_DENOM = 2 ** 52
 // contract, which must never break.
 export const COUNTING_GAME = 'vehicle_boundaries'
 export const MARBLE_GAME = 'marble_order'
+export const BIRDIE_GAME = 'birdie'
 
 // ── shared input normalisation ───────────────────────────────────────────────
 // Every field arrives as a string (URL param / form input) or a JSON value, so
@@ -551,11 +555,319 @@ function parseList(v) {
     .filter((s) => s !== '')
 }
 
+// ── birdie (game=birdie) ─────────────────────────────────────────────────────
+// The round-type weights arrive as "none:715000,frost:190000,fire:95000" (a URL
+// param), as three ints in ROUND_TYPES order, or as a {none,frost,fire} object.
+// Returns { weights } keyed by name, or { error }.
+function parseRoundTypesPpm(v) {
+  if (v != null && typeof v === 'object' && !Array.isArray(v)) {
+    // `{}` is what a round with no side market publishes: nothing to draw against.
+    if (Object.keys(v).length === 0) return { weights: undefined }
+    const weights = {}
+    for (const [k, x] of Object.entries(v)) {
+      const n = intOrNaN(x)
+      if (!Number.isInteger(n) || n < 0) return { error: `round-type weight for "${k}" must be a whole number of parts-per-million.` }
+      weights[trimLower(k)] = n
+    }
+    return { weights }
+  }
+  const items = parseList(v)
+  if (items === undefined) return { weights: undefined }
+  if (items.length === 0) return { error: 'The round-type weights list is empty.' }
+  const weights = {}
+  if (items.every((s) => s.includes(':'))) {
+    for (const item of items) {
+      const parts = item.split(':').map((x) => x.trim())
+      if (parts.length !== 2 || parts[0] === '') return { error: `Round-type weights must be name:ppm pairs; got "${item}".` }
+      const [name, ppm] = parts
+      const n = intOrNaN(ppm)
+      if (!Number.isInteger(n) || n < 0) return { error: `round-type weight for "${name}" must be a whole number of parts-per-million.` }
+      if (Object.prototype.hasOwnProperty.call(weights, name)) return { error: `Round type "${name}" is listed twice.` }
+      weights[name] = n
+    }
+  } else {
+    if (items.length !== ROUND_TYPES.length) return { error: `Supply the round-type weights as name:ppm pairs, or exactly ${ROUND_TYPES.length} whole numbers in ${ROUND_TYPES.join(', ')} order.` }
+    for (let i = 0; i < items.length; i++) {
+      const n = intOrNaN(items[i])
+      if (!Number.isInteger(n) || n < 0) return { error: 'Every round-type weight must be a whole number of parts-per-million.' }
+      weights[ROUND_TYPES[i]] = n
+    }
+  }
+  const unknown = Object.keys(weights).filter((k) => !ROUND_TYPES.includes(k))
+  if (unknown.length) return { error: `Unknown round type(s) ${JSON.stringify(unknown)}; expected ${JSON.stringify(ROUND_TYPES)}.` }
+  return { weights }
+}
+
+// The published catalogue: the registry row's `entries` (or the row itself), as an
+// array or a JSON string. Only ELIGIBLE entries take part in the draw. Returns
+// { entries } (undefined when nothing was supplied) or { error }.
+function parseCatalogue(v) {
+  if (!isSupplied(v) && !Array.isArray(v) && (v == null || typeof v !== 'object')) return { entries: undefined }
+  let data = v
+  if (typeof v === 'string') {
+    try {
+      data = JSON.parse(v)
+    } catch (e) {
+      return { error: 'The catalogue is not valid JSON: ' + e.message }
+    }
+  }
+  if (data && !Array.isArray(data) && typeof data === 'object') data = data.entries
+  if (!Array.isArray(data)) return { error: 'The catalogue must be a JSON array of entries (or a registry row with an `entries` array).' }
+  const entries = []
+  for (const e of data) {
+    if (!e || typeof e !== 'object') return { error: 'Every catalogue entry must be an object.' }
+    if (e.eligible === false) continue
+    const mr = intOrNaN(e.make_rate_ppm)
+    const w = intOrNaN(e.weight_ppm)
+    if (!isSupplied(e.entry_id) || !isSupplied(e.golfer_id) || !isSupplied(e.location_id) || !Number.isInteger(mr) || !Number.isInteger(w) || w < 0) {
+      return { error: `Catalogue entry ${JSON.stringify(e.entry_id ?? '?')} needs entry_id, golfer_id, location_id, make_rate_ppm and weight_ppm.` }
+    }
+    entries.push({ entry_id: String(e.entry_id).trim(), golfer_id: String(e.golfer_id).trim(), location_id: String(e.location_id).trim(), make_rate_ppm: mr, weight_ppm: w })
+  }
+  if (entries.length === 0) return { error: 'The catalogue has no eligible entries.' }
+  if (new Set(entries.map((e) => e.entry_id)).size !== entries.length) return { error: 'The catalogue contains a duplicate entry_id.' }
+  // the engine draws over the eligible list SORTED by entry_id
+  entries.sort((a, b) => (a.entry_id < b.entry_id ? -1 : a.entry_id > b.entry_id ? 1 : 0))
+  return { entries }
+}
+
+// Birdie (dynamic-odds golf). Three independent draws over one committed seed:
+//   pattern     marbleOrder(k=1) over the 8 pattern marbles, weighted by the
+//               make rate — the result the count/exact markets pay on
+//   round type  weightedPick over none/frost/fire — the result the side market pays on
+//   card        weightedPick over the published catalogue — which golfer the
+//               make rate came from (needs the catalogue to check)
+// plus the paytable hash that bound the prices at round open, recomputed from the
+// same make rate. VERIFIED = commitment + the pattern reproduced + every published
+// value that CAN be checked checks out. A published round type that cannot be
+// recomputed (no weights supplied) blocks green: a paid result nobody checked is
+// not a verified round. The card is a provenance check on the make rate; without
+// the catalogue the draw is still recomputed and the make rate is taken as published.
+export async function verifyBirdieRound(round) {
+  const game = BIRDIE_GAME
+  const seed = String(round.serverSeed || '').trim().toLowerCase()
+  if (!/^[0-9a-f]+$/i.test(seed) || seed.length % 2 !== 0) {
+    return { verdict: 'error', game, error: 'The revealed seed must be an even-length hex string.' }
+  }
+  const chainIndex = intOrNaN(round.chainIndex)
+  if (chainIndex !== undefined && !(Number.isInteger(chainIndex) && chainIndex >= 0)) {
+    return { verdict: 'error', game, error: 'The chain index must be a whole number of 0 or more.' }
+  }
+
+  // The eight pattern marbles, in PATTERNS order — the draw universe.
+  const marbles = parseList(round.marbles)
+  if (!marbles || marbles.length === 0) return { verdict: 'error', game, error: 'Supply the round’s marbles — the eight pattern entries in HHH, HHM, HMH, MHH, HMM, MHM, MMH, MMM order.' }
+  if (marbles.length !== PATTERNS.length) return { verdict: 'error', game, error: `A Birdie round has exactly ${PATTERNS.length} pattern marbles; ${marbles.length} were supplied.` }
+  if (new Set(marbles).size !== marbles.length) return { verdict: 'error', game, error: 'The marbles list contains a duplicate.' }
+
+  // The make rate is what everything is priced from.
+  const makeRatePpm = intOrNaN(round.makeRatePpm)
+  if (makeRatePpm === undefined) return { verdict: 'error', game, error: 'Supply the card’s make rate (make_rate_ppm) — the board is priced from it.' }
+  if (!Number.isInteger(makeRatePpm) || makeRatePpm <= 0) return { verdict: 'error', game, error: 'The make rate must be a positive whole number of parts-per-million.' }
+
+  // Optional published weights — a cross-check against the recomputed table.
+  let publishedWeightsPpm
+  if (isSupplied(round.weightsPpm) || Array.isArray(round.weightsPpm)) {
+    const raw = parseList(round.weightsPpm)
+    if (!raw || raw.length === 0) return { verdict: 'error', game, error: 'The weights (ppm) list is empty — omit it, or supply one weight per pattern.' }
+    const weights = raw.map((x) => intOrNaN(x))
+    if (weights.some((n) => !Number.isInteger(n) || n < 0)) return { verdict: 'error', game, error: 'Every weight must be a whole number of parts-per-million.' }
+    if (weights.length !== PATTERNS.length) return { verdict: 'error', game, error: `weights (${weights.length}) must be index-aligned to the ${PATTERNS.length} patterns.` }
+    publishedWeightsPpm = weights
+  }
+
+  const rtp = parseRoundTypesPpm(round.roundTypesPpm)
+  if (rtp.error) return { verdict: 'error', game, error: rtp.error }
+  const publishedRoundType = isSupplied(round.roundType) ? trimLower(round.roundType) : undefined
+  if (publishedRoundType !== undefined && !ROUND_TYPES.includes(publishedRoundType)) {
+    return { verdict: 'error', game, error: `The round type must be one of ${ROUND_TYPES.join(', ')}.` }
+  }
+  const cat = parseCatalogue(round.catalogue)
+  if (cat.error) return { verdict: 'error', game, error: cat.error }
+  const publishedCardIndex = intOrNaN(round.cardIndex)
+  if (publishedCardIndex !== undefined && !(Number.isInteger(publishedCardIndex) && publishedCardIndex >= 0)) {
+    return { verdict: 'error', game, error: 'The card index must be a whole number of 0 or more.' }
+  }
+  const publishedCatalogueSize = intOrNaN(round.catalogueSize)
+  if (publishedCatalogueSize !== undefined && !(Number.isInteger(publishedCatalogueSize) && publishedCatalogueSize > 0)) {
+    return { verdict: 'error', game, error: 'The catalogue size must be a positive whole number.' }
+  }
+
+  const proof = {
+    schemeVersion: round.schemeVersion ?? 2,
+    serverSeed: seed,
+    nonce: round.nonce,
+    beacon: '', // Birdie draws with the empty beacon, always
+    chainRootHash: round.chainRootHash,
+    chainIndex,
+    observedCommitment: round.observedCommitment
+  }
+  const commit = await verifyCommitment(proof)
+
+  // 1. the board: weights, multipliers and the hash that bound them, all from the make rate
+  const board = birdieBoard(makeRatePpm)
+  const recomputedPaytableHash = await paytableHash(makeRatePpm)
+  const weightsMatch = publishedWeightsPpm === undefined ? undefined : publishedWeightsPpm.join(',') === board.weightsPpm.join(',')
+  const publishedPaytableHash = isSupplied(round.paytableHash) ? trimLower(round.paytableHash) : undefined
+  const paytableMatches = publishedPaytableHash === undefined ? undefined : publishedPaytableHash === recomputedPaytableHash
+
+  // 2. the pattern: one weighted "order" draw over the eight marbles
+  let derived
+  try {
+    derived = await marbleOrder(seed, marbles, 1, { beacon: '', weightsPpm: board.weightsPpm })
+  } catch (e) {
+    return { verdict: 'error', game, error: e.message }
+  }
+  const publishedOrder = parseList(round.order)
+  let orderMatches
+  if (publishedOrder !== undefined) {
+    orderMatches = publishedOrder.length === derived.order.length && publishedOrder.every((name, i) => name === derived.order[i])
+  }
+  const publishedIndex = intOrNaN(round.index)
+  const indexMatches = publishedIndex === undefined ? undefined : publishedIndex === derived.index
+  const publishedDraw = isSupplied(round.draw) ? trimLower(round.draw) : undefined
+  const drawMatches = publishedDraw === undefined ? undefined : publishedDraw === derived.draw
+
+  // 3. the round type: its own draw; reproducible only with the weights it was drawn against
+  const recomputedRoundTypeDraw = await roundTypeDraw(seed)
+  const publishedRoundTypeDraw = isSupplied(round.roundTypeDraw) ? trimLower(round.roundTypeDraw) : undefined
+  const roundTypeDrawMatches = publishedRoundTypeDraw === undefined ? undefined : publishedRoundTypeDraw === recomputedRoundTypeDraw
+  let roundTypeResult
+  let roundTypeMatches
+  if (rtp.weights !== undefined) {
+    try {
+      roundTypeResult = await drawRoundType(seed, rtp.weights)
+    } catch (e) {
+      return { verdict: e.code === 'ROUND_TYPE_WEIGHTS' ? 'mismatch' : 'error', game, error: e.message }
+    }
+    if (publishedRoundType !== undefined) roundTypeMatches = publishedRoundType === roundTypeResult.roundType
+  }
+  // A published frost or fire with nothing to recompute it from is a paid result nobody checked.
+  // A published `none` with no weights is a round with no side market: nothing was paid on it.
+  const roundTypeUnchecked = publishedRoundType !== undefined && publishedRoundType !== 'none' && rtp.weights === undefined
+
+  // 4. the card: the draw is always recomputed; the pick needs the catalogue
+  const recomputedCardDraw = await core.draw13(seed, '', 'card', 0)
+  const publishedCardDraw = isSupplied(round.cardDraw) ? trimLower(round.cardDraw) : undefined
+  const cardDrawMatches = publishedCardDraw === undefined ? undefined : publishedCardDraw === recomputedCardDraw
+  const publishedCatalogueHash = isSupplied(round.catalogueHash) ? trimLower(round.catalogueHash) : undefined
+  let card
+  let catalogueHashMatches
+  let catalogueSizeMatches
+  let cardIndexMatches
+  let cardMakeRateMatches
+  let recomputedCatalogueHash
+  if (cat.entries !== undefined) {
+    recomputedCatalogueHash = await catalogueHash(cat.entries)
+    catalogueHashMatches = publishedCatalogueHash === undefined ? undefined : publishedCatalogueHash === recomputedCatalogueHash
+    catalogueSizeMatches = publishedCatalogueSize === undefined ? undefined : publishedCatalogueSize === cat.entries.length
+    try {
+      card = await birdieCard(seed, cat.entries)
+    } catch (e) {
+      return { verdict: 'error', game, error: e.message }
+    }
+    cardIndexMatches = publishedCardIndex === undefined ? undefined : publishedCardIndex === card.index
+    // the binding that matters: the drawn card's make rate IS the make rate the board was priced from
+    cardMakeRateMatches = card.makeRatePpm === makeRatePpm
+  }
+
+  // GREEN needs the pattern reproduced (and the round type, if one was published);
+  // ANY supplied value that disagrees is a hard fail — never fail open.
+  const checks = [weightsMatch, paytableMatches, orderMatches, indexMatches, drawMatches, roundTypeMatches, roundTypeDrawMatches,
+    cardDrawMatches, catalogueHashMatches, catalogueSizeMatches, cardIndexMatches, cardMakeRateMatches]
+  // The round type is settled when none was published, when a published `none` had no
+  // weights to draw against (no side market), or when the recomputed type matches.
+  const roundTypeSettled =
+    publishedRoundType === undefined || roundTypeMatches === true || (publishedRoundType === 'none' && rtp.weights === undefined)
+  let resultMatches
+  if (checks.some((c) => c === false)) resultMatches = false
+  else if (orderMatches === true && !roundTypeUnchecked && roundTypeSettled) resultMatches = true
+
+  let verdict
+  if (commit.commitmentVerified === false || resultMatches === false || commit.chainLinksToRoot === false) verdict = 'mismatch'
+  else if (commit.commitmentVerified === true && resultMatches === true) verdict = 'verified'
+  else verdict = 'inconclusive'
+
+  return {
+    verdict,
+    game,
+    marbles: derived.marbles,
+    k: 1,
+    weighted: true,
+    makeRatePpm: board.makeRatePpm,
+    publishedMakeRatePpm: makeRatePpm,
+    weightsPpm: board.weightsPpm,
+    publishedWeightsPpm,
+    weightsMatch,
+    countPpm: board.countPpm,
+    optionPpm: board.optionPpm,
+    multipliers: board.multipliers,
+    paytablePreimage: board.paytablePreimage,
+    paytableHash: recomputedPaytableHash,
+    publishedPaytableHash,
+    paytableMatches,
+    order: derived.order,
+    pattern: PATTERNS[derived.index],
+    publishedOrder,
+    orderMatches,
+    publishedIndex,
+    indexMatches,
+    publishedDraw,
+    drawMatches,
+    draw: derived.draw,
+    index: derived.index,
+    target: derived.target,
+    totalPpm: derived.totalPpm,
+    buckets: derived.buckets,
+    roundTypeDraw: recomputedRoundTypeDraw,
+    publishedRoundTypeDraw,
+    roundTypeDrawMatches,
+    roundType: roundTypeResult?.roundType,
+    roundTypeNames: roundTypeResult?.names,
+    roundTypeWeightsPpm: roundTypeResult?.weightsPpm,
+    roundTypeTarget: roundTypeResult?.target,
+    roundTypeTotalPpm: roundTypeResult?.totalPpm,
+    roundTypeBuckets: roundTypeResult?.buckets,
+    publishedRoundType,
+    roundTypeMatches,
+    roundTypeUnchecked,
+    cardDraw: recomputedCardDraw,
+    publishedCardDraw,
+    cardDrawMatches,
+    catalogueSupplied: cat.entries !== undefined,
+    catalogueSize: cat.entries?.length,
+    publishedCatalogueSize,
+    catalogueSizeMatches,
+    catalogueHash: recomputedCatalogueHash,
+    publishedCatalogueHash,
+    catalogueHashMatches,
+    cardIndex: card?.index,
+    cardEntryId: card?.entryId,
+    cardMakeRatePpm: card?.makeRatePpm,
+    cardTarget: card?.target,
+    cardTotalPpm: card?.totalPpm,
+    cardBuckets: card?.buckets,
+    publishedCardIndex,
+    cardIndexMatches,
+    cardMakeRateMatches,
+    resultMatches,
+    beacon: '',
+    recomputedCommitment: commit.recomputedCommitment,
+    observed: commit.observed,
+    commitmentVerified: commit.commitmentVerified,
+    chainLinksToRoot: commit.chainLinksToRoot,
+    walked: commit.walked,
+    root: commit.root,
+    chainIndex: proof.chainIndex
+  }
+}
+
 // Dispatcher on the `game` discriminator. ABSENT (or anything unrecognised)
 // means crash — the original single-game contract, which must never break.
 export async function verifyRound(round) {
   const game = trimLower(round?.game ?? '')
   if (game === COUNTING_GAME) return verifyCountingRound(round)
   if (game === MARBLE_GAME) return verifyMarbleRound(round)
+  if (game === BIRDIE_GAME) return verifyBirdieRound(round)
   return verifyCrashRound(round)
 }
