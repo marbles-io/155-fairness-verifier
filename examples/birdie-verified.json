@@ -8,6 +8,7 @@
   "chainIndex": 1,
   "marbles": "m-HHH,m-HHM,m-HMH,m-MHH,m-HMM,m-MHM,m-MMH,m-MMM",
   "makeRatePpm": 500000,
+  "rtpPpm": 950000,
   "weightsPpm": "125000,125000,125000,125000,125000,125000,125000,125000",
   "paytableHash": "468afe9bc9bee5d15a55c2dc32eefeeddf92d157c86613a59ccd6d8b26bb9bcc",
   "order": "m-MMM",

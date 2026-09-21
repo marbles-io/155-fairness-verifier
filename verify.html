@@ -198,6 +198,10 @@
             <input id="bRoundType" spellcheck="false" placeholder="none · frost · fire" />
           </div>
         </div>
+        <div class="field birdie-only">
+          <label for="bRtp">Base RTP (ppm) — the round’s published <code>rtp_ppm</code> <span class="hint">(blank = today’s 940000; rounds before 2026-09-21 were 950000)</span></label>
+          <input id="bRtp" spellcheck="false" placeholder="940000" />
+        </div>
         <div class="row birdie-only">
           <div class="field">
             <label for="bPaytable">Published paytable hash — bound the prices at round open</label>
@@ -489,8 +493,12 @@
       // of the card's make rate, so they — and the paytable hash — are recomputed.
       const PATTERNS = ['HHH', 'HHM', 'HMH', 'MHH', 'HMM', 'MHM', 'MMH', 'MMM']
       const BIRDIE_OPTIONS = ['IN3', 'IN2', 'IN1', 'IN0', 'HHM', 'HMH', 'MHH', 'HMM', 'MHM', 'MMH']
-      const BIRDIE_RTP_PPM = 950000
-      const BIRDIE_MARGIN = 1e6 / BIRDIE_RTP_PPM - 1 // 0.05263157894736836 — one literal on every side
+      // The base RTP a round is priced at: every round publishes its own rtp_ppm (race_ready.payload.odds) and the
+      // widget's deep link carries it; this is today's value and the default for a reveal that does not say.
+      // 940000 (94%) since 2026-09-21, 950000 before — a 950000 round verifies when its rtp_ppm is supplied.
+      const BIRDIE_RTP_PPM = 940000
+      const BIRDIE_MARGIN = 1e6 / BIRDIE_RTP_PPM - 1 // 0.06382978723404253 — one literal on every side
+      const birdieMargin = (rtpPpm = BIRDIE_RTP_PPM) => 1e6 / rtpPpm - 1
       const BIRDIE_MIN_MAKE_RATE_PPM = 150000
       const BIRDIE_MAX_MAKE_RATE_PPM = 850000
       const ROUND_TYPES = ['none', 'frost', 'fire']
@@ -518,18 +526,18 @@
         const w = Object.fromEntries(PATTERNS.map((p, i) => [p, weightsPpm[i]]))
         return { IN3: w.HHH, IN2: w.HHM + w.HMH + w.MHH, IN1: w.HMM + w.MHM + w.MMH, IN0: w.MMM }
       }
-      const birdieMultiplier = (ppm) => 1 / ((ppm / 1e6) * (1 + BIRDIE_MARGIN))
+      const birdieMultiplier = (ppm, rtpPpm = BIRDIE_RTP_PPM) => 1 / ((ppm / 1e6) * (1 + birdieMargin(rtpPpm)))
       const hashTerm = (m) => Math.floor(m * 100 + 0.5) // half-up on the exact float, NEVER Math.round
-      function birdieBoard(makeRatePpm) {
+      function birdieBoard(makeRatePpm, rtpPpm = BIRDIE_RTP_PPM) {
         const weightsPpm = patternWeightsPpm(makeRatePpm)
         const counts = countPpm(weightsPpm)
         const per = { ...counts }
         PATTERNS.forEach((p, i) => { if (BIRDIE_OPTIONS.includes(p)) per[p] = weightsPpm[i] })
-        const multipliers = Object.fromEntries(BIRDIE_OPTIONS.map((o) => [o, birdieMultiplier(per[o])]))
-        const paytablePreimage = `${BIRDIE_RTP_PPM}|` + weightsPpm.join(',') + '|' + BIRDIE_OPTIONS.map((o) => hashTerm(multipliers[o])).join(',')
-        return { makeRatePpm: clampMakeRate(makeRatePpm), weightsPpm, countPpm: counts, optionPpm: per, multipliers, paytablePreimage }
+        const multipliers = Object.fromEntries(BIRDIE_OPTIONS.map((o) => [o, birdieMultiplier(per[o], rtpPpm)]))
+        const paytablePreimage = `${rtpPpm}|` + weightsPpm.join(',') + '|' + BIRDIE_OPTIONS.map((o) => hashTerm(multipliers[o])).join(',')
+        return { makeRatePpm: clampMakeRate(makeRatePpm), rtpPpm, weightsPpm, countPpm: counts, optionPpm: per, multipliers, paytablePreimage }
       }
-      const paytableHash = async (makeRatePpm) => sha256Ascii(birdieBoard(makeRatePpm).paytablePreimage)
+      const paytableHash = async (makeRatePpm, rtpPpm = BIRDIE_RTP_PPM) => sha256Ascii(birdieBoard(makeRatePpm, rtpPpm).paytablePreimage)
       // The catalogue commitment: the five pricing fields per entry, rows sorted by entry_id, joined by newline.
       function cataloguePreimage(entries) {
         const rows = [...entries].sort((a, b) => (a.entry_id < b.entry_id ? -1 : a.entry_id > b.entry_id ? 1 : 0))
@@ -871,6 +879,10 @@
         const makeRatePpm = intOrNaN(round.makeRatePpm)
         if (makeRatePpm === undefined) return err('Supply the card’s make rate (make_rate_ppm) — the board is priced from it.')
         if (!Number.isInteger(makeRatePpm) || makeRatePpm <= 0) return err('The make rate must be a positive whole number of parts-per-million.')
+        // The base RTP the board was priced at (race_ready.payload.odds.rtp_ppm); omitted = today's BIRDIE_RTP_PPM.
+        const rtpPpmRaw = intOrNaN(round.rtpPpm)
+        const rtpPpm = rtpPpmRaw === undefined ? BIRDIE_RTP_PPM : rtpPpmRaw
+        if (!Number.isInteger(rtpPpm) || rtpPpm <= 0 || rtpPpm > 1000000) return err('The base RTP (rtp_ppm) must be a whole number of parts-per-million from 1 to 1000000 — omit it for the current 940000.')
 
         let publishedWeightsPpm
         if (isSupplied(round.weightsPpm) || Array.isArray(round.weightsPpm)) {
@@ -894,8 +906,8 @@
 
         const c = await verifyCommitment(seed, round)
 
-        const board = birdieBoard(makeRatePpm)
-        const recomputedPaytableHash = await paytableHash(makeRatePpm)
+        const board = birdieBoard(makeRatePpm, rtpPpm)
+        const recomputedPaytableHash = await paytableHash(makeRatePpm, rtpPpm)
         const weightsMatch = publishedWeightsPpm === undefined ? undefined : publishedWeightsPpm.join(',') === board.weightsPpm.join(',')
         const publishedPaytableHash = isSupplied(round.paytableHash) ? trimLower(round.paytableHash) : undefined
         const paytableMatches = publishedPaytableHash === undefined ? undefined : publishedPaytableHash === recomputedPaytableHash
@@ -950,7 +962,7 @@
         else verdict = 'inconclusive'
 
         return { verdict, game: 'birdie', marbles: d.marbles, k: 1, weighted: true,
-                 makeRatePpm: board.makeRatePpm, publishedMakeRatePpm: makeRatePpm, weightsPpm: board.weightsPpm, publishedWeightsPpm, weightsMatch,
+                 makeRatePpm: board.makeRatePpm, publishedMakeRatePpm: makeRatePpm, rtpPpm, rtpPpmIsCurrent: rtpPpm === BIRDIE_RTP_PPM, weightsPpm: board.weightsPpm, publishedWeightsPpm, weightsMatch,
                  countPpm: board.countPpm, optionPpm: board.optionPpm, multipliers: board.multipliers, paytablePreimage: board.paytablePreimage,
                  paytableHash: recomputedPaytableHash, publishedPaytableHash, paytableMatches,
                  order: d.order, pattern: PATTERNS[d.index], publishedOrder, orderMatches, publishedIndex, indexMatches, publishedDraw, drawMatches,
@@ -1058,7 +1070,7 @@
       function readBirdieForm(base) {
         return {
           ...base,
-          marbles: $('bMarbles').value, makeRatePpm: $('bMakeRate').value, order: $('bOrder').value,
+          marbles: $('bMarbles').value, makeRatePpm: $('bMakeRate').value, rtpPpm: $('bRtp').value, order: $('bOrder').value,
           roundType: $('bRoundType').value, paytableHash: $('bPaytable').value, roundTypesPpm: $('bRoundTypesPpm').value,
           weightsPpm: $('bWeights').value, index: $('bIndex').value, draw: $('bDraw').value, roundTypeDraw: $('bRoundTypeDraw').value,
           cardDraw: $('bCardDraw').value, cardIndex: $('bCardIndex').value, catalogueSize: $('bCatSize').value,
@@ -1099,6 +1111,7 @@
         const rtp = o.roundTypesPpm ?? o.round_types_ppm
         $('bMarbles').value = game === BIRDIE_GAME ? csv(o.marbles) : ''
         $('bMakeRate').value = o.makeRatePpm ?? o.make_rate_ppm ?? ''
+        $('bRtp').value = o.rtpPpm ?? o.rtp_ppm ?? ''
         $('bOrder').value = game === BIRDIE_GAME ? csv(o.order) : ''
         $('bRoundType').value = o.roundType ?? o.round_type ?? ''
         $('bPaytable').value = o.paytableHash ?? o.paytable_hash ?? ''
@@ -1282,6 +1295,7 @@
         if (res.publishedWeightsPpm !== undefined) patternKv.push(['published weights', res.publishedWeightsPpm.join(',') + (res.weightsMatch ? '  ✓ same' : '  ✕ DIFFER')])
 
         const priceKv = BIRDIE_OPTIONS.map((o) => [o, `${res.multipliers[o].toFixed(2)}×   (${pct(res.optionPpm[o])})`])
+        priceKv.push(['base RTP', `${res.rtpPpm} ppm  (${(res.rtpPpm / 10000).toFixed(2)}%)` + (res.rtpPpmIsCurrent ? '' : `  — as published for this round; today’s rounds are ${BIRDIE_RTP_PPM}`)])
         priceKv.push(['preimage', res.paytablePreimage])
         priceKv.push(['sha256(preimage)', res.paytableHash, true])
         priceKv.push(['published', res.publishedPaytableHash ?? '— not supplied —'])
@@ -1328,7 +1342,7 @@
           stepRow('3 — The putt pattern derives from the seed and the make rate', res.orderMatches,
             'The eight pattern weights are <code>p<sup>h</sup>(1−p)<sup>3−h</sup></code> from the make rate — explicit float products, floored to integer ppm with the remainder handed to the largest fractions, pinned by the 701-point band table — then HMAC-SHA256 of the seed over <code>:order:0</code> → first 13 hex → scaled to the weight total → the pattern bucket it lands in. The bucket walk is integer-only.', patternKv),
           stepRow('4 — The prices were fixed by the same make rate', res.paytableMatches,
-            'Every option pays <code>1 / (p · (1 + margin))</code> at RTP ' + (BIRDIE_RTP_PPM / 10000) + '%. The paytable hash published at round open is <code>sha256("rtp|weights|floor(100·multiplier + 0.5)…")</code>; recomputing it from the make rate proves the prices you saw came from this board.', priceKv),
+            'Every option pays <code>1 / (p · (1 + margin))</code> at the round’s published RTP — ' + (res.rtpPpm / 10000) + '% here' + (res.rtpPpmIsCurrent ? '' : ', ' + (BIRDIE_RTP_PPM / 10000) + '% for rounds opened today') + '. The paytable hash published at round open is <code>sha256("rtp|weights|floor(100·multiplier + 0.5)…")</code>; recomputing it from the make rate proves the prices you saw came from this board.', priceKv),
           stepRow('5 — The round type derives from the seed', rtState, rtDetail, rtKv),
           stepRow('6 — The card (which golfer priced the round) derives from the seed', cardState, cardDetail, cardKv)
         )
@@ -1387,7 +1401,7 @@
       //   verify.html?game=marble_order&serverSeed=…&marbles=black,blue,green,orange,red,sky,white,yellow
       //               &k=3&order=green,red,white&index=106&draw=5142bd05c2e59
       //               &weightsPpm=471700,377400,94300,47200,9400   (weighted games only)
-      //   verify.html?game=birdie&serverSeed=…&marbles=<8 ids>&makeRatePpm=500000&order=<winning id>   (observedOrder is accepted too)
+      //   verify.html?game=birdie&serverSeed=…&marbles=<8 ids>&makeRatePpm=500000&rtpPpm=940000&order=<winning id>   (observedOrder is accepted too; rtpPpm omitted = 940000)
       //               &paytableHash=…&roundType=frost&roundTypeDraw=…&roundTypesPpm=none:715000,frost:190000,fire:95000
       //               &cardDraw=…&cardIndex=1&catalogueHash=…&catalogueSize=3   (+ index, draw, weightsPpm)
       // `game` ABSENT means crash — the original contract, unchanged.
@@ -1422,6 +1436,7 @@
           draw: g('draw'),
           // birdie-only
           makeRatePpm: g('makeRatePpm'),
+          rtpPpm: g('rtpPpm'),
           paytableHash: g('paytableHash'),
           roundType: g('roundType'),
           roundTypeDraw: g('roundTypeDraw'),

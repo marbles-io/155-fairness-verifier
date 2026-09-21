@@ -101,6 +101,7 @@ of the round's **make rate**, plus two more seed-derived draws — adds:
 | `marbles` | when betting opens | the eight pattern entries, canonical order `HHH, HHM, HMH, MHH, HMM, MHM, MMH, MMM` (H = holed, M = missed, per putt) |
 | `order` | at settlement | the winning pattern's entry — the result the count and exact markets pay on |
 | `make_rate_ppm` | when betting opens | the card's per-putt make chance; **every price is a function of it** |
+| `rtp_ppm` | when betting opens | the base RTP the board was priced at — `940000` (94%) since 2026-09-21, `950000` before; optional, and a reveal that omits it is priced at today's 940000 |
 | `paytable_hash` | when betting opens | `sha256` of the priced board — binds the prices you saw to the make rate |
 | `weights_ppm` / `index` / `draw` | at settlement | the pattern weights (recomputed from the make rate either way), the chosen index and the raw `order` draw — optional cross-checks |
 | `round_type` | at settlement | `none` (plain) \| `frost` \| `fire` — the result the round-type side market pays on |
@@ -384,8 +385,9 @@ give the (1_000_000 − sum(floors)) leftover units to the largest fractional pa
 leftover unit between patterns. The game's own implementations and this one agree at every make rate
 in the band; [`vectors/birdie-weights-band.json`](vectors/birdie-weights-band.json) pins 701 of them.
 
-Every priced option pays `1 / (p_option · (1 + margin))` at RTP `950000` ppm
-(`margin = 1e6/950000 − 1 = 0.05263157894736836`, one literal on every side). The ten priced options,
+Every priced option pays `1 / (p_option · (1 + margin))` at RTP `940000` ppm
+(`margin = 1e6/rtp_ppm − 1`; `0.06382978723404253` at today's 940000, one literal on every side; 950000 before
+2026-09-21 — pass the round's own `rtp_ppm` and a round opened at 950000 verifies against that value). The ten priced options,
 in this order, are
 
 ```
@@ -397,7 +399,7 @@ IN3 = HHH        IN2 = HHM + HMH + MHH        IN1 = HMM + MHM + MMH        IN0 =
 paytable hash that was published at round open is
 
 ```
-preimage = "950000|<8 weights in PATTERNS order, comma-joined>|<10 terms in OPTIONS order, comma-joined>"
+preimage = "<rtp_ppm>|<8 weights in PATTERNS order, comma-joined>|<10 terms in OPTIONS order, comma-joined>"   # rtp_ppm = 940000 today
 term     = floor(multiplier × 100 + 0.5)                # half-up on the exact float — never round()
 paytable_hash = sha256(preimage)                       # ASCII, like the chain
 ```

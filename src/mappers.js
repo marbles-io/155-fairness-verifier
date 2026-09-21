@@ -288,9 +288,14 @@ export async function marbleOrder(serverSeed, marbles, k, { beacon = '', weights
 export const PATTERNS = ['HHH', 'HHM', 'HMH', 'MHH', 'HMM', 'MHM', 'MMH', 'MMM']
 // The ten priced options: four counts, then the six bettable exact patterns (HHH/MMM are not bettable).
 export const BIRDIE_OPTIONS = ['IN3', 'IN2', 'IN1', 'IN0', 'HHM', 'HMH', 'MHH', 'HMM', 'MHM', 'MMH']
-export const BIRDIE_RTP_PPM = 950000
-// ONE literal on every side (engine, Go, here): 1e6/950000 - 1 = 0.05263157894736836.
+// The base RTP a round is priced at. Every round publishes its own `rtp_ppm` in race_ready.payload.odds
+// and the widget's deep link carries it; BIRDIE_RTP_PPM is what today's rounds carry and the default for a
+// reveal that does not say. 940000 (94%) since 2026-09-21, 950000 before — a round opened at 950000 still
+// verifies when its rtp_ppm is supplied, because the paytable preimage starts with that number.
+export const BIRDIE_RTP_PPM = 940000
+// ONE literal on every side (engine, Go, here): 1e6/940000 - 1 = 0.06382978723404253.
 export const BIRDIE_MARGIN = 1e6 / BIRDIE_RTP_PPM - 1
+export const birdieMargin = (rtpPpm = BIRDIE_RTP_PPM) => 1e6 / rtpPpm - 1
 export const BIRDIE_MIN_MAKE_RATE_PPM = 150000
 export const BIRDIE_MAX_MAKE_RATE_PPM = 850000
 // The side-market outcomes, canonical order. `none` is plain (not bettable) and present so the weights sum.
@@ -335,8 +340,8 @@ export function countPpm(weightsPpm) {
 }
 
 // The exact multiplier the platform pays for an option of probability `ppm`: 1 / (p (1 + margin)). Never rounded here.
-export function birdieMultiplier(ppm) {
-  return 1 / ((ppm / 1e6) * (1 + BIRDIE_MARGIN))
+export function birdieMultiplier(ppm, rtpPpm = BIRDIE_RTP_PPM) {
+  return 1 / ((ppm / 1e6) * (1 + birdieMargin(rtpPpm)))
 }
 
 // The paytable hashes the DISPLAY value x100 as an integer, half-up on the exact float —
@@ -346,22 +351,22 @@ export function hashTerm(m) {
 }
 
 // make rate -> the whole priced board and the preimage of the hash that bound it at round open.
-export function birdieBoard(makeRatePpm) {
+export function birdieBoard(makeRatePpm, rtpPpm = BIRDIE_RTP_PPM) {
   const weightsPpm = patternWeightsPpm(makeRatePpm)
   const counts = countPpm(weightsPpm)
   const per = { ...counts }
   PATTERNS.forEach((p, i) => {
     if (BIRDIE_OPTIONS.includes(p)) per[p] = weightsPpm[i]
   })
-  const multipliers = Object.fromEntries(BIRDIE_OPTIONS.map((o) => [o, birdieMultiplier(per[o])]))
+  const multipliers = Object.fromEntries(BIRDIE_OPTIONS.map((o) => [o, birdieMultiplier(per[o], rtpPpm)]))
   const paytablePreimage =
-    `${BIRDIE_RTP_PPM}|` + weightsPpm.join(',') + '|' + BIRDIE_OPTIONS.map((o) => hashTerm(multipliers[o])).join(',')
-  return { makeRatePpm: clampMakeRate(makeRatePpm), weightsPpm, countPpm: counts, optionPpm: per, multipliers, paytablePreimage }
+    `${rtpPpm}|` + weightsPpm.join(',') + '|' + BIRDIE_OPTIONS.map((o) => hashTerm(multipliers[o])).join(',')
+  return { makeRatePpm: clampMakeRate(makeRatePpm), rtpPpm, weightsPpm, countPpm: counts, optionPpm: per, multipliers, paytablePreimage }
 }
 
 // sha256 of the ASCII preimage — the value published as `paytable_hash`.
-export async function paytableHash(makeRatePpm) {
-  return core.sha256Ascii(birdieBoard(makeRatePpm).paytablePreimage)
+export async function paytableHash(makeRatePpm, rtpPpm = BIRDIE_RTP_PPM) {
+  return core.sha256Ascii(birdieBoard(makeRatePpm, rtpPpm).paytablePreimage)
 }
 
 // The catalogue commitment: exactly the five fields that price a round, one row per entry,

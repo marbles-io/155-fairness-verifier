@@ -211,6 +211,7 @@ const BIRDIE_GOLD = {
   chainIndex: 1,
   marbles: 'm-HHH,m-HHM,m-HMH,m-MHH,m-HMM,m-MHM,m-MMH,m-MMM',
   makeRatePpm: 500000,
+  rtpPpm: 950000, // this golden round was opened at the 95% base; today's rounds say 940000 (and may omit it)
   weightsPpm: '125000,125000,125000,125000,125000,125000,125000,125000',
   paytableHash: '468afe9bc9bee5d15a55c2dc32eefeeddf92d157c86613a59ccd6d8b26bb9bcc',
   order: 'm-MMM',
@@ -243,6 +244,14 @@ export const BIRDIE_CASES = [
   ['birdie: round_type none published WITH weights that draw frost → mismatch', bclone({ roundType: 'none' }), 'mismatch'],
   ['birdie: no optional cross-checks at all → verified on commitment + pattern', bclone({ weightsPpm: undefined, paytableHash: undefined, index: undefined, draw: undefined, cardDraw: undefined, cardIndex: undefined, catalogueHash: undefined, catalogueSize: undefined, catalogue: undefined, roundType: undefined, roundTypeDraw: undefined, roundTypesPpm: undefined }), 'verified'],
   ['birdie: a supplied non-empty beacon is IGNORED (Birdie has none) → verified', bclone({ beacon: 'deadbeef' }), 'verified'],
+  // — the base RTP: a round is priced at ITS OWN rtp_ppm; omitted means today's 940000 —
+  ['birdie: a round at today’s 940000 base with rtp_ppm omitted → verified', bclone({ rtpPpm: undefined, paytableHash: 'b7a349f3210048b83d7a7cb11d59d88094f48ea1a2a2a4230afd423e35fd25e3' }), 'verified'],
+  ['birdie: a round at today’s 940000 base that says so → verified', bclone({ rtpPpm: 940000, paytableHash: 'b7a349f3210048b83d7a7cb11d59d88094f48ea1a2a2a4230afd423e35fd25e3' }), 'verified'],
+  ['birdie: a 950000 round (before 2026-09-21) with rtp_ppm omitted → mismatch, never silently re-priced', bclone({ rtpPpm: undefined }), 'mismatch'],
+  ['birdie: rtp_ppm as a string → verified', bclone({ rtpPpm: ' 950000 ' }), 'verified'],
+  ['birdie: rtp_ppm 0 → error', bclone({ rtpPpm: 0 }), 'error'],
+  ['birdie: rtp_ppm above 1000000 → error', bclone({ rtpPpm: 1000001 }), 'error'],
+  ['birdie: rtp_ppm garbage → error', bclone({ rtpPpm: 'ninety-five' }), 'error'],
   // — explicit failures —
   ['birdie wrong pattern → mismatch', bclone({ order: 'm-HHH' }), 'mismatch'],
   ['birdie wrong index (order still correct) → mismatch', bclone({ index: 0 }), 'mismatch'],

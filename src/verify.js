@@ -5,7 +5,7 @@
 import * as core from './core.js'
 import {
   crashMultiplier, vehicleBoundaries, marbleOrder, OUTCOME_ORDER, WEIGHT_SCALE,
-  PATTERNS, ROUND_TYPES, birdieBoard, paytableHash, catalogueHash, birdieCard, roundTypeDraw, drawRoundType
+  PATTERNS, ROUND_TYPES, BIRDIE_RTP_PPM, birdieBoard, paytableHash, catalogueHash, birdieCard, roundTypeDraw, drawRoundType
 } from './mappers.js'
 
 const R_DENOM = 2 ** 52
@@ -665,6 +665,12 @@ export async function verifyBirdieRound(round) {
   if (makeRatePpm === undefined) return { verdict: 'error', game, error: 'Supply the card’s make rate (make_rate_ppm) — the board is priced from it.' }
   if (!Number.isInteger(makeRatePpm) || makeRatePpm <= 0) return { verdict: 'error', game, error: 'The make rate must be a positive whole number of parts-per-million.' }
 
+  // The base RTP the board was priced at: race_ready.payload.odds.rtp_ppm, carried by the widget's deep link.
+  // A reveal that does not say is priced at today's BIRDIE_RTP_PPM (940000; rounds before 2026-09-21 were 950000).
+  const rtpPpmRaw = intOrNaN(round.rtpPpm)
+  const rtpPpm = rtpPpmRaw === undefined ? BIRDIE_RTP_PPM : rtpPpmRaw
+  if (!Number.isInteger(rtpPpm) || rtpPpm <= 0 || rtpPpm > 1000000) return { verdict: 'error', game, error: 'The base RTP (rtp_ppm) must be a whole number of parts-per-million from 1 to 1000000 — omit it for the current 940000.' }
+
   // Optional published weights — a cross-check against the recomputed table.
   let publishedWeightsPpm
   if (isSupplied(round.weightsPpm) || Array.isArray(round.weightsPpm)) {
@@ -705,8 +711,8 @@ export async function verifyBirdieRound(round) {
   const commit = await verifyCommitment(proof)
 
   // 1. the board: weights, multipliers and the hash that bound them, all from the make rate
-  const board = birdieBoard(makeRatePpm)
-  const recomputedPaytableHash = await paytableHash(makeRatePpm)
+  const board = birdieBoard(makeRatePpm, rtpPpm)
+  const recomputedPaytableHash = await paytableHash(makeRatePpm, rtpPpm)
   const weightsMatch = publishedWeightsPpm === undefined ? undefined : publishedWeightsPpm.join(',') === board.weightsPpm.join(',')
   const publishedPaytableHash = isSupplied(round.paytableHash) ? trimLower(round.paytableHash) : undefined
   const paytableMatches = publishedPaytableHash === undefined ? undefined : publishedPaytableHash === recomputedPaytableHash
@@ -796,6 +802,8 @@ export async function verifyBirdieRound(round) {
     weighted: true,
     makeRatePpm: board.makeRatePpm,
     publishedMakeRatePpm: makeRatePpm,
+    rtpPpm,
+    rtpPpmIsCurrent: rtpPpm === BIRDIE_RTP_PPM,
     weightsPpm: board.weightsPpm,
     publishedWeightsPpm,
     weightsMatch,
