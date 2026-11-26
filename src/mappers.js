@@ -1,4 +1,11 @@
-// Per-game result mappers (v2) — dependency-free ES module. Locked by the vectors.
+// Per-game result mappers — dependency-free ES module. Locked by the vectors.
+//
+// Every integer mapping comes in two schemes, picked by the reveal's scheme_version:
+//   2  the legacy multiply-shift, no rejection — how every round before
+//      155 Media Studios RNG 1.1.0 was drawn. The DEFAULT here, kept forever, so an
+//      old round verifies exactly as it always did.
+//   3  RNG 1.1.0 (BMM DIRT.1001): the same mapping, unbiased by rejection sampling
+//      (drawIndex). Never applied to a scheme-2 reveal.
 
 import * as core from './core.js'
 
@@ -17,6 +24,64 @@ export function crashMultiplier(r, houseEdge = 0.06) {
 // overflows Number's 2^53 exact range, so a float multiply would mis-bucket.
 export function scaledIndex(hex13, n) {
   return Number((BigInt('0x' + hex13) * BigInt(n)) >> BigInt(52))
+}
+
+// ── RNG 1.1.0: unbiased integer scaling (scheme 3, BMM DIRT.1001) ────────────
+// scaledIndex alone is biased by up to 1 part in 2^52 / n when n does not divide
+// 2^52. Lemire (2019) rejection on the SAME multiply-shift fixes it: write
+// x * n = q * 2^52 + low and reject when low < 2^52 mod n. Every index in [0, n)
+// then has exactly floor(2^52 / n) accepted draws, and an accepted draw maps to the
+// index scaledIndex always gave it — so no accepted round changes. A power-of-two
+// n has threshold 0 and never rejects. (NOT "reject x >= n * floor(2^52 / n)" —
+// with multiply-shift that rule is still biased.)
+const R_BIG = BigInt(2) ** BigInt(52)
+const MASK_BIG = R_BIG - BigInt(1)
+// Redraw cap. Unreachable in practice ((n / 2^52)^64); hitting it burns the round
+// rather than returning a biased index.
+export const MAX_REDRAWS = 64
+
+// 2^52 mod n: a draw whose low 52 bits of x * n fall below this is rejected.
+export function rejectionThreshold(n) {
+  if (!Number.isSafeInteger(n) || n < 1) {
+    const e = new Error(`n must be a whole number >= 1: ${n}`)
+    e.code = 'SCALE_N'
+    throw e
+  }
+  return Number(R_BIG % BigInt(n))
+}
+
+// True iff the 52-bit draw maps into [0, n) without bias (Lemire acceptance).
+export function accepts(hex13, n) {
+  return ((BigInt('0x' + hex13) * BigInt(n)) & MASK_BIG) >= BigInt(rejectionThreshold(n))
+}
+
+// Unbiased integer in [0, n) for the draw (label, i): draw13, then the keyed
+// redraw13(j = 1, 2, …) until a draw accepts. `draw` is the j=0 draw (what a reveal
+// publishes), `accepted` the draw actually scaled, `redraws` the rejections j.
+export async function drawIndex(serverSeed, beacon, label, i, n) {
+  rejectionThreshold(n) // validate n before drawing
+  const draw = await core.draw13(serverSeed, beacon, label, i)
+  let h = draw
+  let j = 0
+  while (!accepts(h, n)) {
+    j += 1
+    if (j > MAX_REDRAWS) {
+      const e = new Error('rejection sampling exceeded MAX_REDRAWS')
+      e.code = 'MAX_REDRAWS'
+      throw e
+    }
+    h = await core.redraw13(serverSeed, beacon, label, i, j)
+  }
+  return { index: scaledIndex(h, n), draw, accepted: h, redraws: j }
+}
+
+// The scheme a mapper runs: a whole number >= 2 (2 = legacy, 3 and up = unbiased).
+function checkSchemeVersion(schemeVersion) {
+  if (!Number.isSafeInteger(schemeVersion) || schemeVersion < 2) {
+    const e = new Error(`schemeVersion must be a whole number >= 2 (2 = legacy, 3 = unbiased): ${schemeVersion}`)
+    e.code = 'SCHEME_VERSION'
+    throw e
+  }
 }
 
 // ── counting games ───────────────────────────────────────────────────────────
@@ -56,19 +121,32 @@ export function weightsPpm(probabilities) {
   return [order, w]
 }
 
-// Pick a weighted outcome from a 52-bit draw using INTEGER cumulative buckets.
-// No float touches the decision, so JS/Python/Go agree exactly. The target is
-// scaled by the ACTUAL weight sum (not the constant) so this stays correct for
-// any future scale. Bias vs a true uniform is 1e6 / 2**52 ~= 2.2e-10.
-export function weightedPick(hex13, order, wPpm) {
-  const total = wPpm.reduce((a, b) => a + b, 0)
-  const target = scaledIndex(hex13, total)
+// The entry of `order` whose INTEGER cumulative bucket holds `index` (in
+// [0, sum(wPpm))). No float touches the decision, so JS/Python/Go agree exactly.
+// Returns the order element itself (a name, an index, an object).
+export function pickBucket(index, order, wPpm) {
   let cum = 0
   for (let i = 0; i < order.length; i++) {
     cum += wPpm[i]
-    if (target < cum) return order[i]
+    if (index < cum) return order[i]
   }
-  return order[order.length - 1] // unreachable while the weights sum to the scale
+  return order[order.length - 1] // unreachable while index < sum(wPpm)
+}
+
+// Scheme 2: pick a weighted outcome from a raw 52-bit draw — pickBucket over
+// scaledIndex(hex13, sum), no rejection. The target is scaled by the ACTUAL weight
+// sum (not the constant). Bias vs a true uniform is up to 1e6 / 2**52 ~= 2.2e-10;
+// kept unchanged so scheme-2 rounds verify. Scheme 3 uses weightedPickSeeded.
+export function weightedPick(hex13, order, wPpm) {
+  const total = wPpm.reduce((a, b) => a + b, 0)
+  return pickBucket(scaledIndex(hex13, total), order, wPpm)
+}
+
+// Scheme 3: drawIndex(…, n = sum(wPpm)), then pickBucket.
+// -> { name, index, draw, accepted, redraws } (see drawIndex).
+export async function weightedPickSeeded(serverSeed, beacon, label, i, order, wPpm) {
+  const d = await drawIndex(serverSeed, beacon, label, i, wPpm.reduce((a, b) => a + b, 0))
+  return { name: pickBucket(d.index, order, wPpm), index: d.index, draw: d.draw, accepted: d.accepted, redraws: d.redraws }
 }
 
 // Seed -> { outcome, lowerBound, upperBound } for a counting round.
@@ -81,41 +159,61 @@ export function weightedPick(hex13, order, wPpm) {
 // Every branch uses its own domain label at index 0, so adding a future draw can
 // never shift an existing one, and `draws` ends up with exactly two entries:
 // "outcome" plus the one branch label taken. `gap` is constant across outcomes.
+//
+// `draws` always holds each label's j=0 draw. schemeVersion 3 scales every index
+// through drawIndex and adds `redraws` {label: j} (+ `acceptedDraws` {label: hex})
+// for the labels with j > 0 only — omitted when none; 2 (the default) is the
+// legacy multiply-shift a pre-1.1.0 round was drawn with.
 export async function vehicleBoundaries(
   serverSeed,
   probabilities,
   finalCount,
-  { beacon = '', gap = 3 } = {}
+  { beacon = '', gap = 3, schemeVersion = 2 } = {}
 ) {
+  checkSchemeVersion(schemeVersion)
   const [order, w] = weightsPpm(probabilities)
   const hasJackpot = Object.prototype.hasOwnProperty.call(probabilities, 'jackpot')
   const draws = {}
-  const draw = async (label) => {
-    const h = await core.draw13(serverSeed, beacon, label, 0)
-    draws[label] = h
-    return h
+  const redraws = {}
+  const acceptedDraws = {}
+  // label -> an integer in [0, n): the j=0 draw's multiply-shift (scheme 2), or
+  // drawIndex — the same mapping on the first draw that accepts (scheme 3).
+  const index = async (label, n) => {
+    if (schemeVersion === 2) {
+      const h = await core.draw13(serverSeed, beacon, label, 0)
+      draws[label] = h
+      return scaledIndex(h, n)
+    }
+    const d = await drawIndex(serverSeed, beacon, label, 0, n)
+    draws[label] = d.draw
+    if (d.redraws) {
+      redraws[label] = d.redraws
+      acceptedDraws[label] = d.accepted
+    }
+    return d.index
   }
 
-  const outcomeHex = await draw('outcome')
-  const outcome = weightedPick(outcomeHex, order, w)
+  const total = w.reduce((a, b) => a + b, 0)
+  const target = await index('outcome', total)
+  const outcomeHex = draws.outcome
+  const outcome = pickBucket(target, order, w)
 
   let lowerBound
   let upperBound
   if (outcome === 'under') {
-    lowerBound = finalCount + 1 + scaledIndex(await draw('under_offset'), 2)
+    lowerBound = finalCount + 1 + (await index('under_offset', 2))
     upperBound = lowerBound + gap
   } else if (outcome === 'over') {
-    upperBound = finalCount - (1 + scaledIndex(await draw('over_offset'), 2))
+    upperBound = finalCount - (1 + (await index('over_offset', 2)))
     lowerBound = upperBound - gap
   } else if (outcome === 'range') {
-    const h = await draw('range_offset')
     // 4-way range is STRICTLY between the bounds; 3-way is INCLUSIVE of them.
-    const offset = hasJackpot ? 1 + scaledIndex(h, gap - 1) : scaledIndex(h, gap + 1)
+    const offset = hasJackpot ? 1 + (await index('range_offset', gap - 1)) : await index('range_offset', gap + 1)
     lowerBound = finalCount - offset
     upperBound = lowerBound + gap
   } else {
     // jackpot — the count is pinned to a boundary
-    if (scaledIndex(await draw('jackpot_side'), 2) === 0) {
+    if ((await index('jackpot_side', 2)) === 0) {
       lowerBound = finalCount
       upperBound = finalCount + gap
     } else {
@@ -131,7 +229,6 @@ export async function vehicleBoundaries(
   upperBound = Math.max(lowerBound + gap, upperBound)
 
   // The weighted-bucket trace, so a UI can show WHY this outcome won.
-  const total = w.reduce((a, b) => a + b, 0)
   let cum = 0
   const buckets = order.map((name, i) => {
     const from = cum
@@ -139,7 +236,7 @@ export async function vehicleBoundaries(
     return { name, ppm: w[i], from, to: cum }
   })
 
-  return {
+  const result = {
     outcome,
     lowerBound,
     upperBound,
@@ -148,10 +245,15 @@ export async function vehicleBoundaries(
     weightsPpm: w,
     draws,
     outcomeHex13: outcomeHex,
-    target: scaledIndex(outcomeHex, total),
+    target,
     totalPpm: total,
     buckets
   }
+  if (Object.keys(redraws).length) {
+    result.redraws = redraws
+    result.acceptedDraws = acceptedDraws
+  }
+  return result
 }
 
 // ── marble races (marble_order) ──────────────────────────────────────────────
@@ -188,8 +290,11 @@ export function permutationsIndex(m, k) {
 //   weighted -> weighted pick over the entrants (K == 1 only)
 //
 // `marbles` is the entrant universe for this round in canonical order. Returns the
-// order plus everything a verifier needs to reproduce it.
-export async function marbleOrder(serverSeed, marbles, k, { beacon = '', weightsPpm = null } = {}) {
+// order plus everything a verifier needs to reproduce it. schemeVersion 3 scales
+// through drawIndex and adds `redraws` (+ `accepted`, the draw actually scaled) only
+// when the j=0 draw was rejected; 2 (the default) is the legacy multiply-shift.
+export async function marbleOrder(serverSeed, marbles, k, { beacon = '', weightsPpm = null, schemeVersion = 2 } = {}) {
+  checkSchemeVersion(schemeVersion)
   const m = marbles.length
   if (m === 0) {
     const e = new Error('marbles must be non-empty')
@@ -201,6 +306,8 @@ export async function marbleOrder(serverSeed, marbles, k, { beacon = '', weights
     e.code = 'MARBLE_KM'
     throw e
   }
+
+  if (schemeVersion >= 3) return marbleOrderV3(serverSeed, marbles, k, beacon, weightsPpm)
 
   const draw = await core.draw13(serverSeed, beacon, 'order', 0)
 
@@ -267,6 +374,71 @@ export async function marbleOrder(serverSeed, marbles, k, { beacon = '', weights
     permCount: perms.length,
     weighted: false
   }
+}
+
+// marbleOrder under scheme 3: the same single "order" draw at index 0, scaled
+// through drawIndex (unbiased). The result shape is scheme 2's, plus `redraws` and
+// `accepted` when the draw was rejected at least once. `draw` stays the j=0 draw.
+async function marbleOrderV3(serverSeed, marbles, k, beacon, weightsPpm) {
+  const m = marbles.length
+  let result
+  let d
+  if (weightsPpm !== null && weightsPpm !== undefined) {
+    if (k !== 1) {
+      const e = new Error(`weighted marble_order supports only k=1, got k=${k}`)
+      e.code = 'MARBLE_WEIGHTED_K'
+      throw e
+    }
+    if (weightsPpm.length !== m) {
+      const e = new Error(`weights_ppm must be index-aligned to marbles (${weightsPpm.length} vs ${m})`)
+      e.code = 'MARBLE_WEIGHTS_LEN'
+      throw e
+    }
+    const total = weightsPpm.reduce((a, b) => a + b, 0)
+    if (total !== WEIGHT_SCALE) {
+      // A table that doesn't sum throws; never renormalise.
+      const e = new Error(`weights_ppm must sum to ${WEIGHT_SCALE}, got ${total}`)
+      e.code = 'WEIGHT_SUM'
+      throw e
+    }
+    d = await drawIndex(serverSeed, beacon, 'order', 0, total)
+    const picked = pickBucket(d.index, marbles.map((_, i) => i), weightsPpm)
+    let acc = 0
+    const buckets = marbles.map((name, i) => {
+      const from = acc
+      acc += weightsPpm[i]
+      return { name, ppm: weightsPpm[i], from, to: acc }
+    })
+    result = {
+      order: [marbles[picked]],
+      marbles: [...marbles],
+      k,
+      weightsPpm: [...weightsPpm],
+      draw: d.draw,
+      index: picked,
+      target: d.index,
+      totalPpm: total,
+      buckets,
+      weighted: true
+    }
+  } else {
+    const perms = permutationsIndex(m, k)
+    d = await drawIndex(serverSeed, beacon, 'order', 0, perms.length)
+    result = {
+      order: perms[d.index].map((i) => marbles[i]),
+      marbles: [...marbles],
+      k,
+      draw: d.draw,
+      index: d.index,
+      permCount: perms.length,
+      weighted: false
+    }
+  }
+  if (d.redraws) {
+    result.redraws = d.redraws
+    result.accepted = d.accepted
+  }
+  return result
 }
 
 // ── birdie (golf putting, dynamic odds) ──────────────────────────────────────
@@ -380,9 +552,27 @@ export async function catalogueHash(entries) {
   return core.sha256Ascii(cataloguePreimage(entries))
 }
 
+// A Birdie weighted pick under the round's scheme: weightedPick of the j=0 draw
+// (scheme 2), or weightedPickSeeded at n = sum(w) (scheme 3).
+// -> { draw, name, target, redraws?, accepted? } — the last two only when j > 0.
+async function birdiePick(serverSeed, label, order, w, schemeVersion) {
+  if (schemeVersion >= 3) {
+    const d = await weightedPickSeeded(serverSeed, '', label, 0, order, w)
+    const out = { draw: d.draw, name: d.name, target: d.index }
+    if (d.redraws) {
+      out.redraws = d.redraws
+      out.accepted = d.accepted
+    }
+    return out
+  }
+  const draw = await core.draw13(serverSeed, '', label, 0)
+  return { draw, name: weightedPick(draw, order, w), target: scaledIndex(draw, w.reduce((a, b) => a + b, 0)) }
+}
+
 // Seed -> which catalogue entry priced the round. A weighted pick over the entries IN THE
 // ORDER GIVEN (the engine's eligible list is sorted by entry_id) with their weight_ppm.
-export async function birdieCard(serverSeed, entries) {
+export async function birdieCard(serverSeed, entries, { schemeVersion = 2 } = {}) {
+  checkSchemeVersion(schemeVersion)
   if (!entries.length) {
     const e = new Error('catalogue must be non-empty')
     e.code = 'CATALOGUE_EMPTY'
@@ -390,8 +580,8 @@ export async function birdieCard(serverSeed, entries) {
   }
   const ids = entries.map((e) => e.entry_id)
   const w = entries.map((e) => e.weight_ppm)
-  const draw = await core.draw13(serverSeed, '', 'card', 0)
-  const entryId = weightedPick(draw, ids, w)
+  const p = await birdiePick(serverSeed, 'card', ids, w, schemeVersion)
+  const entryId = p.name
   const index = ids.indexOf(entryId)
   const total = w.reduce((a, b) => a + b, 0)
   let acc = 0
@@ -400,7 +590,12 @@ export async function birdieCard(serverSeed, entries) {
     acc += w[i]
     return { name: e.entry_id, ppm: w[i], from, to: acc }
   })
-  return { draw, index, entryId, entry: entries[index], makeRatePpm: entries[index].make_rate_ppm, target: scaledIndex(draw, total), totalPpm: total, buckets }
+  const result = { draw: p.draw, index, entryId, entry: entries[index], makeRatePpm: entries[index].make_rate_ppm, target: p.target, totalPpm: total, buckets }
+  if (p.redraws) {
+    result.redraws = p.redraws
+    result.accepted = p.accepted
+  }
+  return result
 }
 
 // The side-market draw, its own label so it is independent of the card and the pattern.
@@ -410,7 +605,8 @@ export async function roundTypeDraw(serverSeed) {
 
 // Seed + the published weights -> plain / frost / fire. The names are ROUND_TYPES order
 // restricted to the keys present, exactly as the engine builds them.
-export async function drawRoundType(serverSeed, weightsByName) {
+export async function drawRoundType(serverSeed, weightsByName, { schemeVersion = 2 } = {}) {
+  checkSchemeVersion(schemeVersion)
   const names = ROUND_TYPES.filter((n) => Object.prototype.hasOwnProperty.call(weightsByName, n))
   const w = names.map((n) => weightsByName[n])
   const total = w.reduce((a, b) => a + b, 0)
@@ -419,13 +615,17 @@ export async function drawRoundType(serverSeed, weightsByName) {
     e.code = 'ROUND_TYPE_WEIGHTS'
     throw e
   }
-  const draw = await roundTypeDraw(serverSeed)
-  const roundType = weightedPick(draw, names, w)
+  const p = await birdiePick(serverSeed, 'round_type', names, w, schemeVersion)
   let acc = 0
   const buckets = names.map((name, i) => {
     const from = acc
     acc += w[i]
     return { name, ppm: w[i], from, to: acc }
   })
-  return { draw, roundType, names, weightsPpm: w, target: scaledIndex(draw, total), totalPpm: total, buckets }
+  const result = { draw: p.draw, roundType: p.name, names, weightsPpm: w, target: p.target, totalPpm: total, buckets }
+  if (p.redraws) {
+    result.redraws = p.redraws
+    result.accepted = p.accepted
+  }
+  return result
 }

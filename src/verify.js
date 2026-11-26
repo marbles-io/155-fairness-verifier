@@ -42,6 +42,64 @@ function intOrNaN(v) {
   return Number.isSafeInteger(n) ? n : NaN
 }
 
+// ── scheme_version: which integer mapping the round was drawn with ──────────
+// Absent means 2 — the contract before 155 Media Studios RNG 1.1.0 — so every
+// reveal and link ever minted verifies exactly as it always did. 3 and up is RNG
+// 1.1.0's unbiased (rejection-sampled) mapping, applied ONLY to a reveal that says
+// so. 0 / 1 (pre-v2 commitments) keep the legacy mapping, as before. A supplied
+// value that is not a whole number is refused (NaN), never guessed.
+function mappingScheme(v) {
+  const n = intOrNaN(v)
+  if (n === undefined) return 2
+  if (!Number.isInteger(n)) return NaN
+  return n >= 3 ? n : 2
+}
+const SCHEME_ERROR = 'The scheme version must be a whole number — 2 for rounds before RNG 1.1.0, 3 after (blank means 2).'
+
+// A published redraw count (scheme 3): undefined when not supplied, a whole number
+// >= 0, or NaN when supplied but malformed. Reveals omit it when it is 0.
+function redrawCount(v) {
+  const n = intOrNaN(v)
+  return n === undefined || (Number.isInteger(n) && n >= 0) ? n : NaN
+}
+
+// A counting round's published redraws {label: j} — an object, or "label:j,…" pairs
+// (a URL param). Zero entries are dropped (a reveal lists only j > 0).
+// Returns { redraws } (undefined when nothing was supplied) or { error }.
+function parseRedrawMap(v) {
+  let pairs
+  if (v != null && typeof v === 'object' && !Array.isArray(v)) {
+    pairs = Object.entries(v)
+  } else {
+    const items = parseList(v)
+    if (items === undefined) return { redraws: undefined }
+    pairs = []
+    for (const item of items) {
+      const parts = item.split(':').map((x) => x.trim())
+      if (parts.length !== 2 || parts[0] === '') return { error: `Redraws must be label:count pairs (e.g. range_offset:1); got "${item}".` }
+      pairs.push(parts)
+    }
+  }
+  const redraws = {}
+  const seen = new Set()
+  for (const [k, x] of pairs) {
+    const label = trimLower(k)
+    if (!/^[a-z_]+$/.test(label)) return { error: `"${k}" is not a draw label.` }
+    if (seen.has(label)) return { error: `The draw "${label}" is listed twice in the redraws.` }
+    seen.add(label)
+    const n = redrawCount(x)
+    if (!Number.isInteger(n)) return { error: `The redraw count for "${label}" must be a whole number of 0 or more.` }
+    if (n > 0) redraws[label] = n
+  }
+  return { redraws }
+}
+
+function sameRedraws(a, b) {
+  const ka = Object.keys(a).sort()
+  const kb = Object.keys(b).sort()
+  return ka.length === kb.length && ka.every((k, i) => k === kb[i] && a[k] === b[k])
+}
+
 // Verify the per-round commitment and (v2) the hash-chain linkage. Game-agnostic.
 //   proof: { schemeVersion, serverSeed, nonce?, observedCommitment?, beacon?,
 //            chainRootHash?, chainIndex? }
@@ -227,6 +285,16 @@ export async function verifyCountingRound(round) {
     return { verdict: 'error', game: COUNTING_GAME, error: 'The gap must be a whole number of 1 or more.' }
   }
 
+  const scheme = mappingScheme(round.schemeVersion)
+  if (Number.isNaN(scheme)) return { verdict: 'error', game: COUNTING_GAME, error: SCHEME_ERROR }
+  // Redraws exist only in scheme 3; a scheme-2 round ignores them, exactly as before.
+  let publishedRedraws
+  if (scheme >= 3) {
+    const pr = parseRedrawMap(round.redraws)
+    if (pr.error) return { verdict: 'error', game: COUNTING_GAME, error: pr.error }
+    publishedRedraws = pr.redraws
+  }
+
   // ── the outcome weight table ───────────────────────────────────────────────
   let probabilities
   if (round.probabilities && typeof round.probabilities === 'object') {
@@ -297,7 +365,8 @@ export async function verifyCountingRound(round) {
   try {
     derived = await vehicleBoundaries(seed, probabilities, finalCount, {
       beacon: proof.beacon ?? '',
-      gap
+      gap,
+      schemeVersion: scheme
     })
   } catch (e) {
     // WEIGHT_SUM is a failed check on published values -> mismatch. Anything else
@@ -321,8 +390,11 @@ export async function verifyCountingRound(round) {
     [publishedLower, derived.lowerBound],
     [publishedUpper, derived.upperBound]
   ]
+  // Scheme 3: a published redraw count is seed-derived too — an optional cross-check
+  // that vetoes green when it disagrees, never one that is required for it.
+  const redrawsMatches = publishedRedraws === undefined ? undefined : sameRedraws(publishedRedraws, derived.redraws ?? {})
   let resultMatches
-  if (cmp.some(([pub, got]) => pub !== undefined && pub !== got)) resultMatches = false
+  if (redrawsMatches === false || cmp.some(([pub, got]) => pub !== undefined && pub !== got)) resultMatches = false
   else if (cmp.every(([pub]) => pub !== undefined)) resultMatches = true
 
   let verdict
@@ -361,6 +433,12 @@ export async function verifyCountingRound(round) {
     totalPpm: derived.totalPpm,
     outcomeHex13: derived.outcomeHex13,
     draws: derived.draws,
+    unbiasedScaling: scheme >= 3,
+    redraws: derived.redraws,
+    acceptedDraws: derived.acceptedDraws,
+    publishedRedraws,
+    redrawsMatches,
+    redrawsIgnored: scheme < 3 && isSupplied(round.redraws),
     beacon: proof.beacon ?? '',
     recomputedCommitment: commit.recomputedCommitment,
     observed: commit.observed,
@@ -455,6 +533,14 @@ export async function verifyMarbleRound(round) {
     weightsPpm = weights
   }
 
+  const scheme = mappingScheme(round.schemeVersion)
+  if (Number.isNaN(scheme)) return { verdict: 'error', game: MARBLE_GAME, error: SCHEME_ERROR }
+  // Redraws exist only in scheme 3; a scheme-2 round ignores them, exactly as before.
+  const publishedRedraws = scheme >= 3 ? redrawCount(round.redraws) : undefined
+  if (Number.isNaN(publishedRedraws)) {
+    return { verdict: 'error', game: MARBLE_GAME, error: 'The redraw count must be a whole number of 0 or more.' }
+  }
+
   const proof = {
     schemeVersion: round.schemeVersion ?? 2,
     serverSeed: seed,
@@ -468,7 +554,7 @@ export async function verifyMarbleRound(round) {
 
   let derived
   try {
-    derived = await marbleOrder(seed, marbles, k, { beacon: proof.beacon ?? '', weightsPpm: weightsPpm ?? null })
+    derived = await marbleOrder(seed, marbles, k, { beacon: proof.beacon ?? '', weightsPpm: weightsPpm ?? null, schemeVersion: scheme })
   } catch (e) {
     // WEIGHT_SUM is a failed check on published values -> mismatch. Anything else
     // (bad k/M, empty marbles, bad beacon) is malformed input -> error.
@@ -494,10 +580,12 @@ export async function verifyMarbleRound(round) {
   const indexMatches = publishedIndex === undefined ? undefined : publishedIndex === derived.index
   const publishedDraw = isSupplied(round.draw) ? trimLower(round.draw) : undefined
   const drawMatches = publishedDraw === undefined ? undefined : publishedDraw === derived.draw
+  // Scheme 3: the published redraw count is the same kind of optional cross-check.
+  const redrawsMatches = publishedRedraws === undefined ? undefined : publishedRedraws === (derived.redraws ?? 0)
 
-  // GREEN needs the ORDER reproduced; a disagreeing index or draw is a hard fail.
+  // GREEN needs the ORDER reproduced; a disagreeing index, draw or redraw count is a hard fail.
   let resultMatches
-  if (orderMatches === false || indexMatches === false || drawMatches === false) resultMatches = false
+  if (orderMatches === false || indexMatches === false || drawMatches === false || redrawsMatches === false) resultMatches = false
   else if (orderMatches === true) resultMatches = true
 
   let verdict
@@ -533,6 +621,12 @@ export async function verifyMarbleRound(round) {
     target: derived.target,
     totalPpm: derived.totalPpm,
     buckets: derived.buckets,
+    unbiasedScaling: scheme >= 3,
+    redraws: derived.redraws,
+    accepted: derived.accepted,
+    publishedRedraws,
+    redrawsMatches,
+    redrawsIgnored: scheme < 3 && isSupplied(round.redraws),
     beacon: proof.beacon ?? '',
     recomputedCommitment: commit.recomputedCommitment,
     observed: commit.observed,
@@ -699,6 +793,18 @@ export async function verifyBirdieRound(round) {
     return { verdict: 'error', game, error: 'The catalogue size must be a positive whole number.' }
   }
 
+  const scheme = mappingScheme(round.schemeVersion)
+  if (Number.isNaN(scheme)) return { verdict: 'error', game, error: SCHEME_ERROR }
+  // Scheme 3 reveals add redraws (pattern), card_redraws and round_type_redraws when > 0.
+  // A scheme-2 round ignores all three, exactly as before.
+  const v3 = scheme >= 3
+  const publishedRedraws = v3 ? redrawCount(round.redraws) : undefined
+  const publishedCardRedraws = v3 ? redrawCount(round.cardRedraws) : undefined
+  const publishedRoundTypeRedraws = v3 ? redrawCount(round.roundTypeRedraws) : undefined
+  if ([publishedRedraws, publishedCardRedraws, publishedRoundTypeRedraws].some((n) => Number.isNaN(n))) {
+    return { verdict: 'error', game, error: 'Every redraw count must be a whole number of 0 or more.' }
+  }
+
   const proof = {
     schemeVersion: round.schemeVersion ?? 2,
     serverSeed: seed,
@@ -720,7 +826,7 @@ export async function verifyBirdieRound(round) {
   // 2. the pattern: one weighted "order" draw over the eight marbles
   let derived
   try {
-    derived = await marbleOrder(seed, marbles, 1, { beacon: '', weightsPpm: board.weightsPpm })
+    derived = await marbleOrder(seed, marbles, 1, { beacon: '', weightsPpm: board.weightsPpm, schemeVersion: scheme })
   } catch (e) {
     return { verdict: 'error', game, error: e.message }
   }
@@ -733,6 +839,7 @@ export async function verifyBirdieRound(round) {
   const indexMatches = publishedIndex === undefined ? undefined : publishedIndex === derived.index
   const publishedDraw = isSupplied(round.draw) ? trimLower(round.draw) : undefined
   const drawMatches = publishedDraw === undefined ? undefined : publishedDraw === derived.draw
+  const redrawsMatches = publishedRedraws === undefined ? undefined : publishedRedraws === (derived.redraws ?? 0)
 
   // 3. the round type: its own draw; reproducible only with the weights it was drawn against
   const recomputedRoundTypeDraw = await roundTypeDraw(seed)
@@ -740,13 +847,15 @@ export async function verifyBirdieRound(round) {
   const roundTypeDrawMatches = publishedRoundTypeDraw === undefined ? undefined : publishedRoundTypeDraw === recomputedRoundTypeDraw
   let roundTypeResult
   let roundTypeMatches
+  let roundTypeRedrawsMatches
   if (rtp.weights !== undefined) {
     try {
-      roundTypeResult = await drawRoundType(seed, rtp.weights)
+      roundTypeResult = await drawRoundType(seed, rtp.weights, { schemeVersion: scheme })
     } catch (e) {
       return { verdict: e.code === 'ROUND_TYPE_WEIGHTS' ? 'mismatch' : 'error', game, error: e.message }
     }
     if (publishedRoundType !== undefined) roundTypeMatches = publishedRoundType === roundTypeResult.roundType
+    if (publishedRoundTypeRedraws !== undefined) roundTypeRedrawsMatches = publishedRoundTypeRedraws === (roundTypeResult.redraws ?? 0)
   }
   // A published frost or fire with nothing to recompute it from is a paid result nobody checked.
   // A published `none` with no weights is a round with no side market: nothing was paid on it.
@@ -762,25 +871,28 @@ export async function verifyBirdieRound(round) {
   let catalogueSizeMatches
   let cardIndexMatches
   let cardMakeRateMatches
+  let cardRedrawsMatches
   let recomputedCatalogueHash
   if (cat.entries !== undefined) {
     recomputedCatalogueHash = await catalogueHash(cat.entries)
     catalogueHashMatches = publishedCatalogueHash === undefined ? undefined : publishedCatalogueHash === recomputedCatalogueHash
     catalogueSizeMatches = publishedCatalogueSize === undefined ? undefined : publishedCatalogueSize === cat.entries.length
     try {
-      card = await birdieCard(seed, cat.entries)
+      card = await birdieCard(seed, cat.entries, { schemeVersion: scheme })
     } catch (e) {
       return { verdict: 'error', game, error: e.message }
     }
     cardIndexMatches = publishedCardIndex === undefined ? undefined : publishedCardIndex === card.index
     // the binding that matters: the drawn card's make rate IS the make rate the board was priced from
     cardMakeRateMatches = card.makeRatePpm === makeRatePpm
+    if (publishedCardRedraws !== undefined) cardRedrawsMatches = publishedCardRedraws === (card.redraws ?? 0)
   }
 
   // GREEN needs the pattern reproduced (and the round type, if one was published);
   // ANY supplied value that disagrees is a hard fail — never fail open.
   const checks = [weightsMatch, paytableMatches, orderMatches, indexMatches, drawMatches, roundTypeMatches, roundTypeDrawMatches,
-    cardDrawMatches, catalogueHashMatches, catalogueSizeMatches, cardIndexMatches, cardMakeRateMatches]
+    cardDrawMatches, catalogueHashMatches, catalogueSizeMatches, cardIndexMatches, cardMakeRateMatches,
+    redrawsMatches, roundTypeRedrawsMatches, cardRedrawsMatches]
   // The round type is settled when none was published, when a published `none` had no
   // weights to draw against (no side market), or when the recomputed type matches.
   const roundTypeSettled =
@@ -858,6 +970,21 @@ export async function verifyBirdieRound(round) {
     publishedCardIndex,
     cardIndexMatches,
     cardMakeRateMatches,
+    schemeVersion: proof.schemeVersion,
+    unbiasedScaling: v3,
+    redraws: derived.redraws,
+    accepted: derived.accepted,
+    publishedRedraws,
+    redrawsMatches,
+    roundTypeRedraws: roundTypeResult?.redraws,
+    roundTypeAccepted: roundTypeResult?.accepted,
+    publishedRoundTypeRedraws,
+    roundTypeRedrawsMatches,
+    cardRedraws: card?.redraws,
+    cardAccepted: card?.accepted,
+    publishedCardRedraws,
+    cardRedrawsMatches,
+    redrawsIgnored: !v3 && [round.redraws, round.cardRedraws, round.roundTypeRedraws].some(isSupplied),
     resultMatches,
     beacon: '',
     recomputedCommitment: commit.recomputedCommitment,

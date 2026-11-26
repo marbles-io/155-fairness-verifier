@@ -64,6 +64,7 @@ not a pass — this verifier fails **closed**.
 | `chain_root_hash` | before the **batch** starts | the head of the pre-committed seed chain |
 | `chain_index` | at settlement | this round's position in the chain |
 | `beacon` | n/a for crash | public randomness for beacon-style games (empty for crash) |
+| `scheme_version` | at settlement | `2` for rounds drawn before 155 Media Studios RNG 1.1.0, `3` after — it selects the [integer scaling](#scheme-3-unbiased-integer-scaling-rng-110) (absent means `2`; crash is always `2`) |
 
 **Crash** adds:
 
@@ -82,6 +83,7 @@ not a pass — this verifier fails **closed**.
 | `lower_bound` / `upper_bound` | when betting opens | the boundaries you bet against |
 | `outcomes` | fixed / public | the outcome names, canonical order |
 | `weights_ppm` | fixed / public | their probabilities as integer parts-per-million, summing to `1000000` |
+| `redraws` | at settlement | scheme 3 only, and only when a draw was rejected: `{label: j}` for each draw redrawn `j > 0` times — optional cross-check |
 
 **Marble races** (e.g. Plinko, Snake, Coin Flip — `game=marble_order`) add:
 
@@ -92,6 +94,7 @@ not a pass — this verifier fails **closed**.
 | `k` | fixed / public | how many finishing places (`1` for a single winner, `3` for a podium) |
 | `weights_ppm` | fixed / public | **weighted single-winner games only** — one weight per marble, summing to `1000000` |
 | `index` / `draw` | at settlement | the chosen permutation index and raw 13-hex draw — both seed-derived, optional cross-checks |
+| `redraws` | at settlement | scheme 3 only, and only when the `order` draw was rejected: how many times — optional cross-check |
 
 **Birdie Time** (`game=birdie`) — a marble race whose weights are not a fixed table but a function
 of the round's **make rate**, plus two more seed-derived draws — adds:
@@ -111,6 +114,7 @@ of the round's **make rate**, plus two more seed-derived draws — adds:
 | `card_index` / `catalogue_hash` / `catalogue_size` | at settlement | the drawn entry's index in the published catalogue, the catalogue's hash and its eligible size — checkable only with the **catalogue** (below) |
 | `catalogue_version` | at settlement | which published catalogue registry row the round drew from — the one to paste as `catalogue` |
 | `catalogue` | published per version | the catalogue registry row's `entries` — paste it to bind the make rate to the seed |
+| `redraws` / `card_redraws` / `round_type_redraws` | at settlement | scheme 3 only, each present only when that draw (`order` / `card` / `round_type`) was rejected — optional cross-checks |
 
 ---
 
@@ -140,10 +144,16 @@ verify.html
   &roundType=frost&roundTypeDraw=bee16e4749787&roundTypesPpm=none:715000,frost:190000,fire:95000
   &cardDraw=758f351ff7aa2&cardIndex=1&catalogueHash=<64 hex>&catalogueSize=3
   # …plus the optional index / draw / weightsPpm cross-checks; the catalogue itself is pasted, not linked
+  # scheme 3 rounds (RNG 1.1.0) — counting, marble races and Birdie:
+  &schemeVersion=3
+  &redraws=1                      # marble / Birdie pattern: the order draw's redraws (only when > 0)
+  &redraws=range_offset:1         # counting: label:count pairs, comma-separated (only the labels > 0)
+  &cardRedraws=2&roundTypeRedraws=1   # Birdie (each only when > 0)
 ```
 
 `game` is the only discriminator. **Absent (or anything unrecognised) means crash**,
-so every link ever minted keeps working.
+so every link ever minted keeps working. Likewise **`schemeVersion` absent means 2**: a link
+minted before RNG 1.1.0 verifies exactly as it always did.
 
 ---
 
@@ -152,7 +162,10 @@ so every link ever minted keeps working.
 The scheme is **v2**: a reverse hash chain of secret seeds whose head (`root`) is committed
 before any round is played, plus a domain-separated HMAC that turns a seed into the round's
 outcome. Every player in a round shares one outcome, so there is no per-player "client seed";
-the pre-committed chain is what binds the sequence of seeds.
+the pre-committed chain is what binds the sequence of seeds. **Scheme 3** (155 Media Studios
+RNG 1.1.0) is v2 with one change — unbiased integer scaling — and applies only to the games that
+scale a draw to an integer (counting, marble races, Birdie); see
+[Scheme 3](#scheme-3-unbiased-integer-scaling-rng-110). Crash is unchanged.
 
 Everything uses **SHA-256**, and every hash/HMAC output is written as its **lowercase**
 hex digest (`hexdigest()`). There are **four** checks. A few subtle rules trip up naive
@@ -259,6 +272,46 @@ scaled_index(hex13, n) = (int(hex13, 16) * n) >> 52
 
 ⚠ **Integers only.** With `n = 1_000_000` the product reaches ~2^72, so JS must use `BigInt` and
 Go must use `math/big`. And it is *not* `floor(uniform * n)` — the two disagree at boundaries.
+
+### Scheme 3: unbiased integer scaling (RNG 1.1.0)
+
+On its own, `scaled_index` is biased by up to one part in `2**52 / n` whenever `n` does not divide
+`2**52` (at `n = 1_000_000` that is about `2.2e-10`). A round whose `scheme_version` is **3** removes
+the bias with rejection sampling (Lemire, 2019) on the **same** multiply-shift:
+
+```
+threshold(n)   = 2**52 % n                                   # 0 for a power-of-two n: never rejects
+accepts(h, n)  = ( int(h, 16) * n ) % 2**52 >= threshold(n)  # the low 52 bits of the product
+redraw13(seed, beacon, label, i, j)                           # j = 1, 2, … — a 4-field preimage:
+             = HMAC_SHA256( DECODED seed bytes, beacon + ":" + label + ":" + str(i) + ":" + str(j) )[:13]
+
+draw_index(seed, beacon, label, i, n):
+    h = draw13(seed, beacon, label, i);  j = 0               # the j=0 draw is the one a reveal publishes
+    while not accepts(h, n):
+        j += 1                                               # at most 64, then the round is void
+        h = redraw13(seed, beacon, label, i, j)
+    return scaled_index(h, n), j                             # the index, and the redraw count
+```
+
+Every index in `[0, n)` then has exactly `floor(2**52 / n)` accepted draws, and an accepted draw
+maps to the **same** index `scaled_index` always gave it. At production `n` a rejection is rare
+(about `8e-11` per weighted pick), so almost every scheme-3 round is identical to its scheme-2
+reading. Under scheme 3, **every** `scaled_index(draw13(…), n)` in the game sections below becomes
+`draw_index(…, n)`; a weighted pick scales to `n = sum(weights)` and walks the same buckets.
+
+⚠ **Dispatch on the reveal's `scheme_version`.** `3` (or higher) means rejection; `2` — or no
+version at all — means the plain multiply-shift. Never apply rejection to a scheme-2 round: that
+is what keeps every older round verifying exactly as it did.
+
+⚠ **The redraw preimage has three colons** (`:order:0:1`); a draw has two (`:order:0`). It is *not*
+a draw at index `i + 1`, which some games use for a real, different draw.
+
+⚠ **Not "reject `x >= n * floor(2**52 / n)`".** With multiply-shift, that classic rule stays biased.
+
+A scheme-3 reveal keeps `draw` / `draws` / `card_draw` / `round_type_draw` as the **j = 0** draws
+and adds a redraw count (`redraws`, or `{label: j}` for counting; `card_redraws` and
+`round_type_redraws` for Birdie) **only when it is above 0**. The verifier recomputes every redraw
+from the seed; a published count that disagrees is a MISMATCH, an omitted one is simply not compared.
 
 ### C. The winning outcome
 
@@ -468,6 +521,14 @@ gap. The `marble_order` block covers equal podium (`k=3`) and single-winner (`k=
 weighted single-winner tables, a non-empty beacon, the `k==m` full-permutation edge and the
 single-entrant forced win.
 
+Scheme 3 adds five blocks: `accepts` (crafted draws on both sides of the threshold at every
+production `n`, plus powers of two that never reject), `redraw13` (the 4-field preimage, with a
+beacon and `i > 0`), `draw_index` (end to end at a test-only `n = 2**51 + 1`, where a draw rejects
+about half the time — 0 to 4 redraws), and `marble_order_v3` / `vehicle_boundaries_v3` (the same
+rounds at scheme 3, identical to scheme 2). Every value from before is unchanged, and `npm test`
+also hands every existing vector to the verifier as a round — at no scheme, at 2 and at 3 — and
+requires VERIFIED each time.
+
 [`vectors/birdie-vectors.json`](vectors/birdie-vectors.json) is the Birdie contract — generated by the
 game engine and shared with the backend: four priced boards with every multiplier bit-equal, the
 half-up hash terms, the catalogue hash, and the card / order / round-type draws on one seed (three
@@ -483,8 +544,9 @@ the two can never disagree.
 
 ```
 verify.html                 self-contained browser verifier (inlines src/)
-src/core.js                 SHA-256 chain, HMAC draw, uniform  (no deps)
-src/mappers.js              r → crash multiplier; counting weights + boundaries; marble order;
+src/core.js                 SHA-256 chain, HMAC draw, scheme-3 redraw, uniform  (no deps)
+src/mappers.js              r → crash multiplier; scheme-3 rejection sampling (drawIndex);
+                            counting weights + boundaries; marble order;
                             birdie board / paytable hash / card / round type
 src/verify.js               game-agnostic verifier + verifyCrashRound() + verifyCountingRound()
                             + verifyMarbleRound() + verifyBirdieRound() + verifyRound() dispatcher
@@ -494,6 +556,7 @@ vectors/birdie-weights-band.json  the 701-point make-rate band table
 test/run.mjs                runs the vectors against src/
 test/verdict.mjs            verdict + input-handling edge cases (shared with the inline check)
 test/check-inline.mjs       runs the vectors AND every verdict case against verify.html's copy
+test/vector-rounds.mjs      every existing vector as a round to verify (shared by both)
 examples/                   a VERIFIED crash round, a MISMATCH round, a VERIFIED counting
                             round, a VERIFIED marble round, a VERIFIED birdie round, and a CLI
                             runner (dispatches on `game`)

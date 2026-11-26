@@ -58,6 +58,8 @@
       body:not([data-game="vehicle_boundaries"]) .counting-only { display: none; }
       body:not([data-game="marble_order"]) .marble-only { display: none; }
       body:not([data-game="birdie"]) .birdie-only { display: none; }
+      /* Crash has no integer scaling, so no scheme-3 redraws. */
+      body[data-game="crash"] .not-crash { display: none; }
       .btns { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
       button {
         font: 600 14px system-ui; border-radius: 8px; padding: 10px 18px; cursor: pointer;
@@ -234,6 +236,16 @@
               <input id="beacon" spellcheck="false" placeholder="(empty)" />
             </div>
           </div>
+          <div class="row not-crash">
+            <div class="field">
+              <label for="scheme">Scheme version — 2 before RNG 1.1.0, 3 after <span class="hint">(blank = 2)</span></label>
+              <input id="scheme" spellcheck="false" placeholder="2" />
+            </div>
+            <div class="field">
+              <label for="redraws">Published redraws — scheme 3, omitted when 0 <span class="hint">(counting: label:count pairs)</span></label>
+              <input id="redraws" spellcheck="false" placeholder="(none)" />
+            </div>
+          </div>
           <div class="row counting-only">
             <div class="field">
               <label for="outcomes">Outcomes — canonical order, comma-separated</label>
@@ -293,6 +305,16 @@
           <div class="field birdie-only">
             <label for="bCatHash">Published catalogue hash <span class="hint">(checked with the catalogue)</span></label>
             <input id="bCatHash" spellcheck="false" placeholder="7f1c0b9d89b0…" />
+          </div>
+          <div class="row birdie-only">
+            <div class="field">
+              <label for="bCardRedraws">Published card redraws <span class="hint">(scheme 3, omitted when 0)</span></label>
+              <input id="bCardRedraws" spellcheck="false" placeholder="(none)" />
+            </div>
+            <div class="field">
+              <label for="bRoundTypeRedraws">Published round-type redraws <span class="hint">(scheme 3, omitted when 0)</span></label>
+              <input id="bRoundTypeRedraws" spellcheck="false" placeholder="(none)" />
+            </div>
           </div>
           <div class="field birdie-only">
             <label for="bCatalogue">Catalogue — paste the published registry row (or its <code>entries</code>) to bind the make rate to the seed</label>
@@ -356,6 +378,15 @@
         if (!/^(?:[0-9a-f]{2})*$/.test(beacon)) throw new Error('bad beacon')
         return (await hmacSha256Hex(serverSeed, `${beacon}:${label}:${i}`)).slice(0, 13)
       }
+      // Scheme 3 (RNG 1.1.0): the j-th (j >= 1) redraw of (label, i). preimage
+      // `${beacon}:${label}:${i}:${j}` — three colons, so it never equals a draw13 preimage.
+      async function redraw13(serverSeed, beacon, label, i, j) {
+        if (!/^(?:[0-9a-f]{2})*$/.test(beacon)) throw new Error('bad beacon')
+        if (!/^[a-z_]+$/.test(label)) throw new Error(`bad label (^[a-z_]+$): ${label}`)
+        if (!Number.isInteger(i) || i < 0) throw new Error(`bad i (non-negative int): ${i}`)
+        if (!Number.isSafeInteger(j) || j < 1) { const e = new Error(`bad j (an integer >= 1): ${j}`); e.code = 'REDRAW_J'; throw e }
+        return (await hmacSha256Hex(serverSeed, `${beacon}:${label}:${i}:${j}`)).slice(0, 13)
+      }
       async function uniform(serverSeed, beacon, label, i) {
         return parseInt(await draw13(serverSeed, beacon, label, i), 16) / R_DENOM
       }
@@ -367,6 +398,34 @@
       const OUTCOME_ORDER = ['under', 'range', 'over', 'jackpot']
       const WEIGHT_SCALE = 1000000
       const scaledIndex = (hex13, n) => Number((BigInt('0x' + hex13) * BigInt(n)) >> BigInt(52))
+
+      // RNG 1.1.0 (scheme 3, BMM DIRT.1001): Lemire rejection on the SAME multiply-shift.
+      // Reject when the low 52 bits of x*n < 2^52 mod n; every index then has exactly
+      // floor(2^52/n) accepted draws, and an accepted draw keeps the index it always had.
+      // Scheme 2 (the default everywhere here) never rejects — old rounds verify as before.
+      const R_BIG = BigInt(2) ** BigInt(52)
+      const MASK_BIG = R_BIG - BigInt(1)
+      const MAX_REDRAWS = 64 // unreachable in practice; hitting it burns the round
+      function rejectionThreshold(n) {
+        if (!Number.isSafeInteger(n) || n < 1) { const e = new Error(`n must be a whole number >= 1: ${n}`); e.code = 'SCALE_N'; throw e }
+        return Number(R_BIG % BigInt(n))
+      }
+      const accepts = (hex13, n) => ((BigInt('0x' + hex13) * BigInt(n)) & MASK_BIG) >= BigInt(rejectionThreshold(n))
+      // -> { index, draw (j=0, what a reveal publishes), accepted (the draw scaled), redraws (j) }
+      async function drawIndex(serverSeed, beacon, label, i, n) {
+        rejectionThreshold(n) // validate n before drawing
+        const draw = await draw13(serverSeed, beacon, label, i)
+        let h = draw, j = 0
+        while (!accepts(h, n)) {
+          j += 1
+          if (j > MAX_REDRAWS) { const e = new Error('rejection sampling exceeded MAX_REDRAWS'); e.code = 'MAX_REDRAWS'; throw e }
+          h = await redraw13(serverSeed, beacon, label, i, j)
+        }
+        return { index: scaledIndex(h, n), draw, accepted: h, redraws: j }
+      }
+      function checkSchemeVersion(v) {
+        if (!Number.isSafeInteger(v) || v < 2) { const e = new Error(`schemeVersion must be a whole number >= 2 (2 = legacy, 3 = unbiased): ${v}`); e.code = 'SCHEME_VERSION'; throw e }
+      }
 
       function weightsPpm(probabilities) {
         const has = (o) => Object.prototype.hasOwnProperty.call(probabilities, o)
@@ -389,54 +448,69 @@
       }
 
       // Integer cumulative buckets — no float touches the decision, so JS/Python/Go agree.
-      function weightedPick(hex13, order, wPpm) {
-        const total = wPpm.reduce((a, b) => a + b, 0)
-        const target = scaledIndex(hex13, total)
+      // Returns the order element itself.
+      function pickBucket(index, order, wPpm) {
         let cum = 0
         for (let i = 0; i < order.length; i++) {
           cum += wPpm[i]
-          if (target < cum) return order[i]
+          if (index < cum) return order[i]
         }
         return order[order.length - 1]
+      }
+      // Scheme 2: the raw draw's multiply-shift, no rejection (kept so old rounds verify).
+      const weightedPick = (hex13, order, wPpm) => pickBucket(scaledIndex(hex13, wPpm.reduce((a, b) => a + b, 0)), order, wPpm)
+      // Scheme 3: drawIndex at n = sum(w), then the same bucket walk.
+      async function weightedPickSeeded(serverSeed, beacon, label, i, order, wPpm) {
+        const d = await drawIndex(serverSeed, beacon, label, i, wPpm.reduce((a, b) => a + b, 0))
+        return { name: pickBucket(d.index, order, wPpm), index: d.index, draw: d.draw, accepted: d.accepted, redraws: d.redraws }
       }
 
       // Seed -> outcome + boundaries. Every draw is draw13(seed, beacon, LABEL, 0)
       // — the index is ALWAYS 0 and each branch owns its label, so `draws` ends up
-      // with EXACTLY two entries: "outcome" plus the one branch taken.
-      async function vehicleBoundaries(serverSeed, probabilities, finalCount, { beacon = '', gap = 3 } = {}) {
+      // with EXACTLY two entries: "outcome" plus the one branch taken. `draws` holds
+      // the j=0 draws; scheme 3 adds `redraws` / `acceptedDraws` for labels with j > 0.
+      async function vehicleBoundaries(serverSeed, probabilities, finalCount, { beacon = '', gap = 3, schemeVersion = 2 } = {}) {
+        checkSchemeVersion(schemeVersion)
         const [order, w] = weightsPpm(probabilities)
         const hasJackpot = Object.prototype.hasOwnProperty.call(probabilities, 'jackpot')
-        const draws = {}
-        const draw = async (label) => { const h = await draw13(serverSeed, beacon, label, 0); draws[label] = h; return h }
+        const draws = {}, redraws = {}, acceptedDraws = {}
+        const index = async (label, n) => {
+          if (schemeVersion === 2) { const h = await draw13(serverSeed, beacon, label, 0); draws[label] = h; return scaledIndex(h, n) }
+          const d = await drawIndex(serverSeed, beacon, label, 0, n)
+          draws[label] = d.draw
+          if (d.redraws) { redraws[label] = d.redraws; acceptedDraws[label] = d.accepted }
+          return d.index
+        }
 
-        const outcomeHex = await draw('outcome')
-        const outcome = weightedPick(outcomeHex, order, w)
+        const total = w.reduce((a, b) => a + b, 0)
+        const target = await index('outcome', total)
+        const outcome = pickBucket(target, order, w)
         let lowerBound, upperBound
         if (outcome === 'under') {
-          lowerBound = finalCount + 1 + scaledIndex(await draw('under_offset'), 2)
+          lowerBound = finalCount + 1 + (await index('under_offset', 2))
           upperBound = lowerBound + gap
         } else if (outcome === 'over') {
-          upperBound = finalCount - (1 + scaledIndex(await draw('over_offset'), 2))
+          upperBound = finalCount - (1 + (await index('over_offset', 2)))
           lowerBound = upperBound - gap
         } else if (outcome === 'range') {
-          const h = await draw('range_offset')
           // 4-way range is STRICTLY inside the bounds; 3-way is INCLUSIVE of them.
-          const offset = hasJackpot ? 1 + scaledIndex(h, gap - 1) : scaledIndex(h, gap + 1)
+          const offset = hasJackpot ? 1 + (await index('range_offset', gap - 1)) : await index('range_offset', gap + 1)
           lowerBound = finalCount - offset
           upperBound = lowerBound + gap
         } else {
-          if (scaledIndex(await draw('jackpot_side'), 2) === 0) { lowerBound = finalCount; upperBound = finalCount + gap }
+          if ((await index('jackpot_side', 2)) === 0) { lowerBound = finalCount; upperBound = finalCount + gap }
           else { lowerBound = finalCount - gap; upperBound = finalCount }
         }
         // Clamp invariants, identical to the engine — the PUBLISHED bounds carry them.
         lowerBound = Math.max(1, lowerBound)
         upperBound = Math.max(lowerBound + gap, upperBound)
 
-        const total = w.reduce((a, b) => a + b, 0)
         let cum = 0
         const buckets = order.map((name, i) => { const from = cum; cum += w[i]; return { name, ppm: w[i], from, to: cum } })
-        return { outcome, lowerBound, upperBound, gap, outcomes: order, weightsPpm: w, draws,
-                 outcomeHex13: outcomeHex, target: scaledIndex(outcomeHex, total), totalPpm: total, buckets }
+        const result = { outcome, lowerBound, upperBound, gap, outcomes: order, weightsPpm: w, draws,
+                         outcomeHex13: draws.outcome, target, totalPpm: total, buckets }
+        if (Object.keys(redraws).length) { result.redraws = redraws; result.acceptedDraws = acceptedDraws }
+        return result
       }
 
       // Marble races (marble_order). A round's result is an ORDERED finishing
@@ -455,11 +529,14 @@
         return result
       }
 
-      // A SINGLE draw13(seed, beacon, "order", 0) decides the whole order.
-      async function marbleOrder(serverSeed, marbles, k, { beacon = '', weightsPpm = null } = {}) {
+      // A SINGLE draw13(seed, beacon, "order", 0) decides the whole order. Scheme 3
+      // scales it through drawIndex (+ `redraws` / `accepted` when it was rejected).
+      async function marbleOrder(serverSeed, marbles, k, { beacon = '', weightsPpm = null, schemeVersion = 2 } = {}) {
+        checkSchemeVersion(schemeVersion)
         const m = marbles.length
         if (m === 0) { const e = new Error('marbles must be non-empty'); e.code = 'MARBLE_EMPTY'; throw e }
         if (!(0 < k && k <= m)) { const e = new Error(`need 0 < k <= m, got m=${m} k=${k}`); e.code = 'MARBLE_KM'; throw e }
+        if (schemeVersion >= 3) return marbleOrderV3(serverSeed, marbles, k, beacon, weightsPpm)
         const draw = await draw13(serverSeed, beacon, 'order', 0)
         if (weightsPpm !== null && weightsPpm !== undefined) {
           // Weighted single-winner (K==1 in every live game).
@@ -478,6 +555,27 @@
         const perms = permutationsIndex(m, k)
         const index = scaledIndex(draw, perms.length)
         return { order: perms[index].map((i) => marbles[i]), marbles: [...marbles], k, draw, index, permCount: perms.length, weighted: false }
+      }
+      async function marbleOrderV3(serverSeed, marbles, k, beacon, weightsPpm) {
+        const m = marbles.length
+        let result, d
+        if (weightsPpm !== null && weightsPpm !== undefined) {
+          if (k !== 1) { const e = new Error(`weighted marble_order supports only k=1, got k=${k}`); e.code = 'MARBLE_WEIGHTED_K'; throw e }
+          if (weightsPpm.length !== m) { const e = new Error(`weights_ppm must be index-aligned to marbles (${weightsPpm.length} vs ${m})`); e.code = 'MARBLE_WEIGHTS_LEN'; throw e }
+          const total = weightsPpm.reduce((a, b) => a + b, 0)
+          if (total !== WEIGHT_SCALE) { const e = new Error(`weights_ppm must sum to ${WEIGHT_SCALE}, got ${total}`); e.code = 'WEIGHT_SUM'; throw e }
+          d = await drawIndex(serverSeed, beacon, 'order', 0, total)
+          const picked = pickBucket(d.index, marbles.map((_, i) => i), weightsPpm)
+          let acc = 0
+          const buckets = marbles.map((name, i) => { const from = acc; acc += weightsPpm[i]; return { name, ppm: weightsPpm[i], from, to: acc } })
+          result = { order: [marbles[picked]], marbles: [...marbles], k, weightsPpm: [...weightsPpm], draw: d.draw, index: picked, target: d.index, totalPpm: total, buckets, weighted: true }
+        } else {
+          const perms = permutationsIndex(m, k)
+          d = await drawIndex(serverSeed, beacon, 'order', 0, perms.length)
+          result = { order: perms[d.index].map((i) => marbles[i]), marbles: [...marbles], k, draw: d.draw, index: d.index, permCount: perms.length, weighted: false }
+        }
+        if (d.redraws) { result.redraws = d.redraws; result.accepted = d.accepted }
+        return result
       }
 
       // ── shared input normalisation (identical to src/verify.js) ─────────────
@@ -544,20 +642,36 @@
         return rows.map((e) => `${e.entry_id}|${e.golfer_id}|${e.location_id}|${e.make_rate_ppm}|${e.weight_ppm}`).join('\n')
       }
       const catalogueHash = async (entries) => sha256Ascii(cataloguePreimage(entries))
-      async function birdieCard(serverSeed, entries) {
+      // A Birdie weighted pick under the round's scheme: the j=0 draw's weightedPick
+      // (scheme 2) or weightedPickSeeded at n = sum(w) (scheme 3, + redraws / accepted when j > 0).
+      async function birdiePick(serverSeed, label, order, w, schemeVersion) {
+        if (schemeVersion >= 3) {
+          const d = await weightedPickSeeded(serverSeed, '', label, 0, order, w)
+          const out = { draw: d.draw, name: d.name, target: d.index }
+          if (d.redraws) { out.redraws = d.redraws; out.accepted = d.accepted }
+          return out
+        }
+        const draw = await draw13(serverSeed, '', label, 0)
+        return { draw, name: weightedPick(draw, order, w), target: scaledIndex(draw, w.reduce((a, b) => a + b, 0)) }
+      }
+      async function birdieCard(serverSeed, entries, { schemeVersion = 2 } = {}) {
+        checkSchemeVersion(schemeVersion)
         if (!entries.length) { const e = new Error('catalogue must be non-empty'); e.code = 'CATALOGUE_EMPTY'; throw e }
         const ids = entries.map((e) => e.entry_id)
         const w = entries.map((e) => e.weight_ppm)
-        const draw = await draw13(serverSeed, '', 'card', 0)
-        const entryId = weightedPick(draw, ids, w)
+        const p = await birdiePick(serverSeed, 'card', ids, w, schemeVersion)
+        const entryId = p.name
         const index = ids.indexOf(entryId)
         const total = w.reduce((a, b) => a + b, 0)
         let acc = 0
         const buckets = entries.map((e, i) => { const from = acc; acc += w[i]; return { name: e.entry_id, ppm: w[i], from, to: acc } })
-        return { draw, index, entryId, entry: entries[index], makeRatePpm: entries[index].make_rate_ppm, target: scaledIndex(draw, total), totalPpm: total, buckets }
+        const result = { draw: p.draw, index, entryId, entry: entries[index], makeRatePpm: entries[index].make_rate_ppm, target: p.target, totalPpm: total, buckets }
+        if (p.redraws) { result.redraws = p.redraws; result.accepted = p.accepted }
+        return result
       }
       const roundTypeDraw = (serverSeed) => draw13(serverSeed, '', 'round_type', 0)
-      async function drawRoundType(serverSeed, weightsByName) {
+      async function drawRoundType(serverSeed, weightsByName, { schemeVersion = 2 } = {}) {
+        checkSchemeVersion(schemeVersion)
         const names = ROUND_TYPES.filter((n) => Object.prototype.hasOwnProperty.call(weightsByName, n))
         const w = names.map((n) => weightsByName[n])
         const total = w.reduce((a, b) => a + b, 0)
@@ -566,11 +680,12 @@
           e.code = 'ROUND_TYPE_WEIGHTS'
           throw e
         }
-        const draw = await roundTypeDraw(serverSeed)
-        const roundType = weightedPick(draw, names, w)
+        const p = await birdiePick(serverSeed, 'round_type', names, w, schemeVersion)
         let acc = 0
         const buckets = names.map((name, i) => { const from = acc; acc += w[i]; return { name, ppm: w[i], from, to: acc } })
-        return { draw, roundType, names, weightsPpm: w, target: scaledIndex(draw, total), totalPpm: total, buckets }
+        const result = { draw: p.draw, roundType: p.name, names, weightsPpm: w, target: p.target, totalPpm: total, buckets }
+        if (p.redraws) { result.redraws = p.redraws; result.accepted = p.accepted }
+        return result
       }
 
       const isSupplied = (v) => v != null && String(v).trim() !== ''
@@ -586,6 +701,52 @@
         if (Array.isArray(v)) return v.map((x) => trimLower(x)).filter((s) => s !== '')
         if (!isSupplied(v)) return undefined
         return String(v).split(',').map((s) => s.trim().toLowerCase()).filter((s) => s !== '')
+      }
+
+      // scheme_version -> the integer mapping: absent = 2 (every old round, exactly as
+      // before); 3+ = RNG 1.1.0 rejection sampling, ONLY when the reveal says so; 0/1
+      // keep the legacy mapping; anything not a whole number is refused (NaN).
+      function mappingScheme(v) {
+        const n = intOrNaN(v)
+        if (n === undefined) return 2
+        if (!Number.isInteger(n)) return NaN
+        return n >= 3 ? n : 2
+      }
+      const SCHEME_ERROR = 'The scheme version must be a whole number — 2 for rounds before RNG 1.1.0, 3 after (blank means 2).'
+      // A published redraw count: undefined (not supplied), a whole number >= 0, or NaN.
+      function redrawCount(v) {
+        const n = intOrNaN(v)
+        return n === undefined || (Number.isInteger(n) && n >= 0) ? n : NaN
+      }
+      // Counting redraws {label: j}: an object or "label:j,…" pairs; zero entries dropped.
+      function parseRedrawMap(v) {
+        let pairs
+        if (v != null && typeof v === 'object' && !Array.isArray(v)) pairs = Object.entries(v)
+        else {
+          const items = parseList(v)
+          if (items === undefined) return { redraws: undefined }
+          pairs = []
+          for (const item of items) {
+            const parts = item.split(':').map((x) => x.trim())
+            if (parts.length !== 2 || parts[0] === '') return { error: `Redraws must be label:count pairs (e.g. range_offset:1); got "${item}".` }
+            pairs.push(parts)
+          }
+        }
+        const redraws = {}, seen = new Set()
+        for (const [k, x] of pairs) {
+          const label = trimLower(k)
+          if (!/^[a-z_]+$/.test(label)) return { error: `"${k}" is not a draw label.` }
+          if (seen.has(label)) return { error: `The draw "${label}" is listed twice in the redraws.` }
+          seen.add(label)
+          const n = redrawCount(x)
+          if (!Number.isInteger(n)) return { error: `The redraw count for "${label}" must be a whole number of 0 or more.` }
+          if (n > 0) redraws[label] = n
+        }
+        return { redraws }
+      }
+      function sameRedraws(a, b) {
+        const ka = Object.keys(a).sort(), kb = Object.keys(b).sort()
+        return ka.length === kb.length && ka.every((k, i) => k === kb[i] && a[k] === b[k])
       }
 
       // Commitment + chain linkage. Game-agnostic — both verifiers use it.
@@ -660,6 +821,15 @@
         const gapRaw = intOrNaN(round.gap)
         const gap = gapRaw === undefined ? 3 : gapRaw
         if (!Number.isInteger(gap) || gap < 1) return err('The gap must be a whole number of 1 or more.')
+        const scheme = mappingScheme(round.schemeVersion)
+        if (Number.isNaN(scheme)) return err(SCHEME_ERROR)
+        // Redraws exist only in scheme 3; a scheme-2 round ignores them, exactly as before.
+        let publishedRedraws
+        if (scheme >= 3) {
+          const pr = parseRedrawMap(round.redraws)
+          if (pr.error) return err(pr.error)
+          publishedRedraws = pr.redraws
+        }
 
         let probabilities
         if (round.probabilities && typeof round.probabilities === 'object') {
@@ -689,7 +859,7 @@
         const c = await verifyCommitment(seed, round)
         let d
         try {
-          d = await vehicleBoundaries(seed, probabilities, finalCount, { beacon, gap })
+          d = await vehicleBoundaries(seed, probabilities, finalCount, { beacon, gap, schemeVersion: scheme })
         } catch (e) {
           if (e.code === 'WEIGHT_SUM') return { verdict: 'mismatch', game: 'vehicle_boundaries', error: e.message }
           return err(e.message)
@@ -700,8 +870,10 @@
         const publishedUpper = intOrNaN(round.upperBound)
         // ALL THREE must be supplied AND match — a partial match is not a reproduction.
         const cmp = [[publishedOutcome, d.outcome], [publishedLower, d.lowerBound], [publishedUpper, d.upperBound]]
+        // Scheme 3: a published redraw count vetoes green when it disagrees (never required).
+        const redrawsMatches = publishedRedraws === undefined ? undefined : sameRedraws(publishedRedraws, d.redraws ?? {})
         let resultMatches
-        if (cmp.some(([pub, got]) => pub !== undefined && pub !== got)) resultMatches = false
+        if (redrawsMatches === false || cmp.some(([pub, got]) => pub !== undefined && pub !== got)) resultMatches = false
         else if (cmp.every(([pub]) => pub !== undefined)) resultMatches = true
 
         let verdict
@@ -717,6 +889,8 @@
                    : publishedLower === d.lowerBound && publishedUpper === d.upperBound,
                  resultMatches, outcomes: d.outcomes, weightsPpm: d.weightsPpm, buckets: d.buckets,
                  target: d.target, totalPpm: d.totalPpm, outcomeHex13: d.outcomeHex13, draws: d.draws, beacon,
+                 unbiasedScaling: scheme >= 3, redraws: d.redraws, acceptedDraws: d.acceptedDraws, publishedRedraws, redrawsMatches,
+                 redrawsIgnored: scheme < 3 && isSupplied(round.redraws),
                  recomputedCommitment: c.recomputedCommitment, observed: c.observed, commitmentVerified: c.commitmentVerified,
                  chainLinksToRoot: c.chainLinksToRoot, walked: c.walked, root: c.root, chainIndex: c.chainIndex }
       }
@@ -756,12 +930,17 @@
           }
           weightsPpm = weights
         }
+        const scheme = mappingScheme(round.schemeVersion)
+        if (Number.isNaN(scheme)) return err(SCHEME_ERROR)
+        // Redraws exist only in scheme 3; a scheme-2 round ignores them, exactly as before.
+        const publishedRedraws = scheme >= 3 ? redrawCount(round.redraws) : undefined
+        if (Number.isNaN(publishedRedraws)) return err('The redraw count must be a whole number of 0 or more.')
 
         const beacon = round.beacon ?? ''
         const c = await verifyCommitment(seed, round)
         let d
         try {
-          d = await marbleOrder(seed, marbles, k, { beacon, weightsPpm: weightsPpm ?? null })
+          d = await marbleOrder(seed, marbles, k, { beacon, weightsPpm: weightsPpm ?? null, schemeVersion: scheme })
         } catch (e) {
           if (e.code === 'WEIGHT_SUM') return { verdict: 'mismatch', game: 'marble_order', error: e.message }
           return err(e.message)
@@ -778,9 +957,10 @@
         const indexMatches = publishedIndex === undefined ? undefined : publishedIndex === d.index
         const publishedDraw = isSupplied(round.draw) ? trimLower(round.draw) : undefined
         const drawMatches = publishedDraw === undefined ? undefined : publishedDraw === d.draw
-        // GREEN needs the ORDER reproduced; a disagreeing index or draw is a hard fail.
+        const redrawsMatches = publishedRedraws === undefined ? undefined : publishedRedraws === (d.redraws ?? 0)
+        // GREEN needs the ORDER reproduced; a disagreeing index, draw or redraw count is a hard fail.
         let resultMatches
-        if (orderMatches === false || indexMatches === false || drawMatches === false) resultMatches = false
+        if (orderMatches === false || indexMatches === false || drawMatches === false || redrawsMatches === false) resultMatches = false
         else if (orderMatches === true) resultMatches = true
 
         let verdict
@@ -791,6 +971,8 @@
         return { verdict, game: 'marble_order', marbles: d.marbles, k: d.k, weighted: d.weighted, weightsPpm: d.weightsPpm,
                  order: d.order, publishedOrder, orderMatches, resultMatches, publishedIndex, indexMatches, publishedDraw, drawMatches,
                  draw: d.draw, index: d.index, permCount: d.permCount, target: d.target, totalPpm: d.totalPpm, buckets: d.buckets, beacon,
+                 unbiasedScaling: scheme >= 3, redraws: d.redraws, accepted: d.accepted, publishedRedraws, redrawsMatches,
+                 redrawsIgnored: scheme < 3 && isSupplied(round.redraws),
                  recomputedCommitment: c.recomputedCommitment, observed: c.observed, commitmentVerified: c.commitmentVerified,
                  chainLinksToRoot: c.chainLinksToRoot, walked: c.walked, root: c.root, chainIndex: c.chainIndex }
       }
@@ -903,6 +1085,15 @@
         if (publishedCardIndex !== undefined && !(Number.isInteger(publishedCardIndex) && publishedCardIndex >= 0)) return err('The card index must be a whole number of 0 or more.')
         const publishedCatalogueSize = intOrNaN(round.catalogueSize)
         if (publishedCatalogueSize !== undefined && !(Number.isInteger(publishedCatalogueSize) && publishedCatalogueSize > 0)) return err('The catalogue size must be a positive whole number.')
+        const scheme = mappingScheme(round.schemeVersion)
+        if (Number.isNaN(scheme)) return err(SCHEME_ERROR)
+        // Scheme 3 reveals add redraws (pattern), card_redraws and round_type_redraws when > 0;
+        // a scheme-2 round ignores all three, exactly as before.
+        const v3 = scheme >= 3
+        const publishedRedraws = v3 ? redrawCount(round.redraws) : undefined
+        const publishedCardRedraws = v3 ? redrawCount(round.cardRedraws) : undefined
+        const publishedRoundTypeRedraws = v3 ? redrawCount(round.roundTypeRedraws) : undefined
+        if ([publishedRedraws, publishedCardRedraws, publishedRoundTypeRedraws].some((n) => Number.isNaN(n))) return err('Every redraw count must be a whole number of 0 or more.')
 
         const c = await verifyCommitment(seed, round)
 
@@ -913,7 +1104,7 @@
         const paytableMatches = publishedPaytableHash === undefined ? undefined : publishedPaytableHash === recomputedPaytableHash
 
         let d
-        try { d = await marbleOrder(seed, marbles, 1, { beacon: '', weightsPpm: board.weightsPpm }) } catch (e) { return err(e.message) }
+        try { d = await marbleOrder(seed, marbles, 1, { beacon: '', weightsPpm: board.weightsPpm, schemeVersion: scheme }) } catch (e) { return err(e.message) }
         const publishedOrder = parseList(round.order)
         let orderMatches
         if (publishedOrder !== undefined) orderMatches = publishedOrder.length === d.order.length && publishedOrder.every((name, i) => name === d.order[i])
@@ -921,16 +1112,18 @@
         const indexMatches = publishedIndex === undefined ? undefined : publishedIndex === d.index
         const publishedDraw = isSupplied(round.draw) ? trimLower(round.draw) : undefined
         const drawMatches = publishedDraw === undefined ? undefined : publishedDraw === d.draw
+        const redrawsMatches = publishedRedraws === undefined ? undefined : publishedRedraws === (d.redraws ?? 0)
 
         const recomputedRoundTypeDraw = await roundTypeDraw(seed)
         const publishedRoundTypeDraw = isSupplied(round.roundTypeDraw) ? trimLower(round.roundTypeDraw) : undefined
         const roundTypeDrawMatches = publishedRoundTypeDraw === undefined ? undefined : publishedRoundTypeDraw === recomputedRoundTypeDraw
-        let rt, roundTypeMatches
+        let rt, roundTypeMatches, roundTypeRedrawsMatches
         if (rtp.weights !== undefined) {
-          try { rt = await drawRoundType(seed, rtp.weights) } catch (e) {
+          try { rt = await drawRoundType(seed, rtp.weights, { schemeVersion: scheme }) } catch (e) {
             return { verdict: e.code === 'ROUND_TYPE_WEIGHTS' ? 'mismatch' : 'error', game: 'birdie', error: e.message }
           }
           if (publishedRoundType !== undefined) roundTypeMatches = publishedRoundType === rt.roundType
+          if (publishedRoundTypeRedraws !== undefined) roundTypeRedrawsMatches = publishedRoundTypeRedraws === (rt.redraws ?? 0)
         }
         const roundTypeUnchecked = publishedRoundType !== undefined && publishedRoundType !== 'none' && rtp.weights === undefined
 
@@ -938,18 +1131,20 @@
         const publishedCardDraw = isSupplied(round.cardDraw) ? trimLower(round.cardDraw) : undefined
         const cardDrawMatches = publishedCardDraw === undefined ? undefined : publishedCardDraw === recomputedCardDraw
         const publishedCatalogueHash = isSupplied(round.catalogueHash) ? trimLower(round.catalogueHash) : undefined
-        let card, catalogueHashMatches, catalogueSizeMatches, cardIndexMatches, cardMakeRateMatches, recomputedCatalogueHash
+        let card, catalogueHashMatches, catalogueSizeMatches, cardIndexMatches, cardMakeRateMatches, cardRedrawsMatches, recomputedCatalogueHash
         if (cat.entries !== undefined) {
           recomputedCatalogueHash = await catalogueHash(cat.entries)
           catalogueHashMatches = publishedCatalogueHash === undefined ? undefined : publishedCatalogueHash === recomputedCatalogueHash
           catalogueSizeMatches = publishedCatalogueSize === undefined ? undefined : publishedCatalogueSize === cat.entries.length
-          try { card = await birdieCard(seed, cat.entries) } catch (e) { return err(e.message) }
+          try { card = await birdieCard(seed, cat.entries, { schemeVersion: scheme }) } catch (e) { return err(e.message) }
           cardIndexMatches = publishedCardIndex === undefined ? undefined : publishedCardIndex === card.index
           cardMakeRateMatches = card.makeRatePpm === makeRatePpm
+          if (publishedCardRedraws !== undefined) cardRedrawsMatches = publishedCardRedraws === (card.redraws ?? 0)
         }
 
         const checks = [weightsMatch, paytableMatches, orderMatches, indexMatches, drawMatches, roundTypeMatches, roundTypeDrawMatches,
-          cardDrawMatches, catalogueHashMatches, catalogueSizeMatches, cardIndexMatches, cardMakeRateMatches]
+          cardDrawMatches, catalogueHashMatches, catalogueSizeMatches, cardIndexMatches, cardMakeRateMatches,
+          redrawsMatches, roundTypeRedrawsMatches, cardRedrawsMatches]
         const roundTypeSettled =
           publishedRoundType === undefined || roundTypeMatches === true || (publishedRoundType === 'none' && rtp.weights === undefined)
         let resultMatches
@@ -975,6 +1170,10 @@
                  catalogueHash: recomputedCatalogueHash, publishedCatalogueHash, catalogueHashMatches,
                  cardIndex: card?.index, cardEntryId: card?.entryId, cardMakeRatePpm: card?.makeRatePpm, cardTarget: card?.target,
                  cardTotalPpm: card?.totalPpm, cardBuckets: card?.buckets, publishedCardIndex, cardIndexMatches, cardMakeRateMatches,
+                 unbiasedScaling: v3, redraws: d.redraws, accepted: d.accepted, publishedRedraws, redrawsMatches,
+                 roundTypeRedraws: rt?.redraws, roundTypeAccepted: rt?.accepted, publishedRoundTypeRedraws, roundTypeRedrawsMatches,
+                 cardRedraws: card?.redraws, cardAccepted: card?.accepted, publishedCardRedraws, cardRedrawsMatches,
+                 redrawsIgnored: !v3 && [round.redraws, round.cardRedraws, round.roundTypeRedraws].some(isSupplied),
                  resultMatches, beacon: '',
                  recomputedCommitment: c.recomputedCommitment, observed: c.observed, commitmentVerified: c.commitmentVerified,
                  chainLinksToRoot: c.chainLinksToRoot, walked: c.walked, root: c.root, chainIndex: c.chainIndex }
@@ -1062,7 +1261,10 @@
           outcomes: $('outcomes').value, weightsPpm,
           marbles: $('marbles').value, k: $('kplaces').value, order: $('morder').value,
           index: $('marbleIndex').value, draw: $('marbleDraw').value,
-          schemeVersion: 2
+          // Crash stays scheme 2 (it has no integer scaling); the other games take the
+          // round's own scheme_version, and blank means 2 — exactly as before RNG 1.1.0.
+          schemeVersion: currentGame() !== 'crash' && isSupplied($('scheme').value) ? $('scheme').value : 2,
+          redraws: $('redraws').value
         }
       }
       // Birdie has its own fields (never shares the marble ones, so a hidden value
@@ -1075,10 +1277,13 @@
           weightsPpm: $('bWeights').value, index: $('bIndex').value, draw: $('bDraw').value, roundTypeDraw: $('bRoundTypeDraw').value,
           cardDraw: $('bCardDraw').value, cardIndex: $('bCardIndex').value, catalogueSize: $('bCatSize').value,
           catalogueHash: $('bCatHash').value, catalogue: $('bCatalogue').value,
+          cardRedraws: $('bCardRedraws').value, roundTypeRedraws: $('bRoundTypeRedraws').value,
           k: 1, beacon: ''
         }
       }
       const csv = (v) => (Array.isArray(v) ? v.join(',') : v ?? '')
+      // A reveal's redraws: a count (marble / birdie) or {label: j} (counting) -> the field text.
+      const redrawsText = (v) => (v != null && typeof v === 'object' && !Array.isArray(v) ? Object.entries(v).map(([k, j]) => `${k}:${j}`).join(',') : v ?? '')
       function writeForm(o) {
         // Unrecognised / absent game === crash. Never break the original contract.
         const g = String(o.game ?? '').trim().toLowerCase()
@@ -1125,6 +1330,11 @@
         $('bCatSize').value = o.catalogueSize ?? o.catalogue_size ?? ''
         $('bCatHash').value = o.catalogueHash ?? o.catalogue_hash ?? ''
         $('bCatalogue').value = typeof o.catalogue === 'string' ? o.catalogue : o.catalogue ? JSON.stringify(o.catalogue, null, 1) : ''
+        // scheme 3 (RNG 1.1.0): the round's scheme_version and any published redraw counts
+        $('scheme').value = o.schemeVersion ?? o.scheme_version ?? ''
+        $('redraws').value = redrawsText(o.redraws)
+        $('bCardRedraws').value = o.cardRedraws ?? o.card_redraws ?? ''
+        $('bRoundTypeRedraws').value = o.roundTypeRedraws ?? o.round_type_redraws ?? ''
       }
       // Text-context escaping only (values are rendered inside element text, never
       // in an attribute), so escaping & < > is sufficient. Full hashes are shown
@@ -1190,8 +1400,32 @@
 
       const pct = (ppm) => (ppm / 10000).toFixed(2) + '%'
 
+      // Scheme 3 (RNG 1.1.0) only: the rows a draw's redraws add to a step. A draw that
+      // accepted first time, with no count published, adds NOTHING — that round reads
+      // exactly as it always did.
+      function redrawRows(res, j, accepted, published, matches) {
+        if (!res.unbiasedScaling || (!j && published === undefined)) return []
+        const rows = [['redraws', j ? `${j}  — rejected ${j}× (unbiased scaling), redrawn until a draw accepted` : '0  — accepted first time', !!j]]
+        if (j) rows.push(['accepted hex (13)', accepted, true])
+        if (published !== undefined) rows.push(['published redraws', published + (matches === undefined ? '  (not checked)' : matches ? '  ✓ same' : '  ✕ DIFFER')])
+        return rows
+      }
+      const redrawNote = (beacon, label, j) => j
+        ? ' <strong>Scheme 3:</strong> that draw fell in the small remainder that would bias the scaling, so it was redrawn over <code>' +
+          esc(beacon) + ':' + label + ':0:1</code>' + (j > 1 ? ' … <code>:' + j + '</code>' : '') + '; the first draw that accepts is the one scaled.'
+        : ''
+      const IGNORED_ROW = ['redraws', 'supplied but ignored — only scheme 3 rounds have redraws (set the scheme version to 3 if the reveal says so)']
+
       function countingSteps(res) {
         const branch = Object.keys(res.draws).find((k) => k !== 'outcome')
+        const jOf = (label) => res.redraws?.[label] ?? 0
+        // A reveal lists only the draws with j > 0, so a published map that leaves a draw out says 0 for it.
+        const pubOf = (label) => (res.publishedRedraws === undefined ? undefined : res.publishedRedraws[label] ?? 0)
+        // Show a draw's published count only when the map lists it, or when it omits a draw that WAS redrawn.
+        const shownPub = (label) => (res.publishedRedraws !== undefined && (label in res.publishedRedraws || jOf(label) > 0) ? pubOf(label) : undefined)
+        const rowsOf = (label) => redrawRows(res, jOf(label), res.acceptedDraws?.[label], shownPub(label), shownPub(label) === undefined ? undefined : shownPub(label) === jOf(label))
+        // published redraws on a draw this round never made can only be wrong
+        const strays = res.publishedRedraws ? Object.keys(res.publishedRedraws).filter((k) => !(k in res.draws)) : []
         const bucketRows = res.buckets.map((b) => [
           b.name + (b.name === res.outcome ? '  ← picked' : ''),
           `${b.from}–${b.to - 1}   (${pct(b.ppm)})`,
@@ -1203,31 +1437,40 @@
           range: 'lower = count − offset · upper = lower + gap  (the count lands inside)',
           jackpot: 'Exact — the count is pinned to a boundary: (count, count+gap) or (count−gap, count)'
         }[res.outcome]
+        const boundsKv = [
+          ['final count', res.finalCount],
+          ['gap', res.gap],
+          [branch ? branch + ' hex (13)' : 'branch draw', branch ? res.draws[branch] : '—', true]
+        ].concat(branch ? rowsOf(branch) : [], [
+          ['recomputed', `${res.lowerBound} – ${res.upperBound}`, true],
+          ['published', res.publishedLowerBound === undefined || res.publishedUpperBound === undefined
+            ? '— not supplied —'
+            : `${res.publishedLowerBound} – ${res.publishedUpperBound}`]
+        ])
+        if (strays.length) boundsKv.push(['published redraws', strays.map((k) => `${k}:${res.publishedRedraws[k]}`).join(', ') + '  ✕ — a draw this round never made'])
+        if (res.redrawsIgnored) boundsKv.push(IGNORED_ROW)
+        const outcomeRedrawBad = pubOf('outcome') !== undefined && pubOf('outcome') !== jOf('outcome')
         return sharedSteps(res).concat(
           stepRow(
             '3 — The winning outcome derives from the seed',
-            res.outcomeMatches,
-            'HMAC-SHA256 of the seed over <code>' + esc(res.beacon) + ':outcome:0</code> → first 13 hex → scaled to the weight total → the integer bucket it lands in. No float touches this decision.',
-            [['hex (13)', res.outcomeHex13, true], ['target', `${res.target}  of ${res.totalPpm} ppm`]].concat(
+            outcomeRedrawBad ? false : res.outcomeMatches,
+            'HMAC-SHA256 of the seed over <code>' + esc(res.beacon) + ':outcome:0</code> → first 13 hex → scaled to the weight total → the integer bucket it lands in. No float touches this decision.' +
+              redrawNote(res.beacon, 'outcome', jOf('outcome')),
+            [['hex (13)', res.outcomeHex13, true]].concat(
+              rowsOf('outcome'),
+              [['target', `${res.target}  of ${res.totalPpm} ppm`]],
               bucketRows,
               [['recomputed', res.outcome, true], ['published', res.publishedOutcome ?? '— not supplied —']]
             )
           ),
           stepRow(
             '4 — The boundaries derive from the seed and the count',
-            res.boundsMatch,
+            res.redrawsMatches === false ? false : res.boundsMatch,
             'The final count is <em>measured from the clip</em> — it is an input here, not a seed value. The offset that places the boundaries around it is the <code>' +
               esc(branch ?? '—') +
-              '</code> draw: ' + esc(formula ?? '') + '. Then the clamps <code>lower ≥ 1</code> and <code>upper ≥ lower + gap</code>.',
-            [
-              ['final count', res.finalCount],
-              ['gap', res.gap],
-              [branch ? branch + ' hex (13)' : 'branch draw', branch ? res.draws[branch] : '—', true],
-              ['recomputed', `${res.lowerBound} – ${res.upperBound}`, true],
-              ['published', res.publishedLowerBound === undefined || res.publishedUpperBound === undefined
-                ? '— not supplied —'
-                : `${res.publishedLowerBound} – ${res.publishedUpperBound}`]
-            ]
+              '</code> draw: ' + esc(formula ?? '') + '. Then the clamps <code>lower ≥ 1</code> and <code>upper ≥ lower + gap</code>.' +
+              (branch ? redrawNote(res.beacon, branch, jOf(branch)) : ''),
+            boundsKv
           )
         )
       }
@@ -1249,12 +1492,13 @@
             : single
             ? 'scaled to the number of entrants → the winner it lands on.'
             : 'scaled to the number of possible finishing orders → the index into them.') +
-          ' No float touches this decision.'
+          ' No float touches this decision.' + redrawNote(res.beacon, 'order', res.redraws ?? 0)
         const kv = [
           ['entrants (' + M + ')', res.marbles.join(', ')],
           ['places (k)', res.k],
           ['draw hex (13)', res.draw, true]
-        ]
+        ].concat(redrawRows(res, res.redraws ?? 0, res.accepted, res.publishedRedraws, res.redrawsMatches))
+        if (res.redrawsIgnored) kv.push(IGNORED_ROW)
         if (res.weighted) {
           const winner = res.order[0]
           kv.push(['target', `${res.target}  of ${res.totalPpm} ppm`])
@@ -1285,9 +1529,11 @@
         const patternKv = [
           ['make rate', `${res.makeRatePpm} ppm  (${(res.makeRatePpm / 10000).toFixed(1)}% per putt)`],
           ['weights (ppm)', PATTERNS.map((p, i) => `${p} ${res.weightsPpm[i]}`).join(' · '), true],
-          ['draw hex (13)', res.draw, true],
+          ['draw hex (13)', res.draw, true]
+        ].concat(redrawRows(res, res.redraws ?? 0, res.accepted, res.publishedRedraws, res.redrawsMatches), [
           ['target', `${res.target}  of ${res.totalPpm} ppm`]
-        ]
+        ])
+        if (res.redrawsIgnored) patternKv.push(IGNORED_ROW)
         for (const b of res.buckets) patternKv.push([b.name + (b.name === pattern ? '  ← pattern' : ''), `${b.from}–${b.to - 1}   (${pct(b.ppm)})`, b.name === pattern])
         if (res.publishedIndex !== undefined) patternKv.push(['published index', res.publishedIndex])
         patternKv.push(['recomputed pattern', `${res.pattern}  (${pattern})`, true])
@@ -1303,24 +1549,27 @@
         const rtKv = [['draw hex (13)', res.roundTypeDraw, true]]
         if (res.publishedRoundTypeDraw !== undefined) rtKv.push(['published draw', res.publishedRoundTypeDraw])
         if (res.roundType !== undefined) {
+          rtKv.push(...redrawRows(res, res.roundTypeRedraws ?? 0, res.roundTypeAccepted, res.publishedRoundTypeRedraws, res.roundTypeRedrawsMatches))
           rtKv.push(['target', `${res.roundTypeTarget}  of ${res.roundTypeTotalPpm} ppm`])
           for (const b of res.roundTypeBuckets) rtKv.push([b.name + (b.name === res.roundType ? '  ← type' : ''), `${b.from}–${b.to - 1}   (${pct(b.ppm)})`, b.name === res.roundType])
           rtKv.push(['recomputed', res.roundType, true])
         }
         rtKv.push(['published', res.publishedRoundType ?? '— not supplied —'])
-        const rtState = res.roundTypeUnchecked ? false : (res.publishedRoundType === undefined ? undefined : res.roundTypeMatches)
-        const rtDetail = res.roundTypeUnchecked
+        const rtState = res.roundTypeUnchecked || res.roundTypeRedrawsMatches === false ? false : (res.publishedRoundType === undefined ? undefined : res.roundTypeMatches)
+        const rtDetail = (res.roundTypeUnchecked
           ? 'A round type was published but no weights were supplied, so it could NOT be recomputed. Add the round-type weights (<code>none:…,frost:…,fire:…</code>) — a paid result nobody checked is not a verified round.'
           : res.roundType === undefined
           ? 'No weights were supplied, so nothing was drawn against — a round with no side market. The draw is still shown.'
           : res.publishedRoundType === undefined
           ? 'Recomputed from the weights, but no published round type was supplied to compare it with — not checked.'
-          : 'HMAC-SHA256 of the seed over <code>:round_type:0</code> → first 13 hex → scaled to the weight total → the bucket it lands in. Its own label, so it is independent of the pattern and the card.'
+          : 'HMAC-SHA256 of the seed over <code>:round_type:0</code> → first 13 hex → scaled to the weight total → the bucket it lands in. Its own label, so it is independent of the pattern and the card.') +
+          (res.roundType !== undefined ? redrawNote('', 'round_type', res.roundTypeRedraws ?? 0) : '')
 
         const cardKv = [['draw hex (13)', res.cardDraw, true]]
         if (res.publishedCardDraw !== undefined) cardKv.push(['published draw', res.publishedCardDraw + (res.cardDrawMatches ? '  ✓' : '  ✕')])
         let cardState, cardDetail
         if (res.catalogueSupplied) {
+          cardKv.push(...redrawRows(res, res.cardRedraws ?? 0, res.cardAccepted, res.publishedCardRedraws, res.cardRedrawsMatches))
           cardKv.push(['catalogue', `${res.catalogueSize} eligible entries · sha256 ${res.catalogueHash}`, true])
           cardKv.push(['published hash', res.publishedCatalogueHash ?? '— not supplied —'])
           cardKv.push(['target', `${res.cardTarget}  of ${res.cardTotalPpm} ppm`])
@@ -1328,19 +1577,22 @@
           cardKv.push(['recomputed card', `${res.cardEntryId} (index ${res.cardIndex}) → make rate ${res.cardMakeRatePpm}`, true])
           cardKv.push(['published index', res.publishedCardIndex ?? '— not supplied —'])
           cardKv.push(['make rate bound', res.cardMakeRateMatches ? `yes — the drawn card’s make rate is the ${res.makeRatePpm} the board was priced from` : `NO — the drawn card says ${res.cardMakeRatePpm}, the board was priced from ${res.makeRatePpm}`, true])
-          const all = [res.cardDrawMatches, res.catalogueHashMatches, res.catalogueSizeMatches, res.cardIndexMatches, res.cardMakeRateMatches]
+          const all = [res.cardDrawMatches, res.catalogueHashMatches, res.catalogueSizeMatches, res.cardIndexMatches, res.cardMakeRateMatches, res.cardRedrawsMatches]
           cardState = all.some((x) => x === false) ? false : true
-          cardDetail = 'HMAC-SHA256 of the seed over <code>:card:0</code> → first 13 hex → scaled to the catalogue’s weight total → the entry it lands in. The catalogue hash is <code>sha256</code> of the five pricing fields per entry, sorted by id — so the make rate the whole board was priced from is bound to the seed.'
+          cardDetail = 'HMAC-SHA256 of the seed over <code>:card:0</code> → first 13 hex → scaled to the catalogue’s weight total → the entry it lands in. The catalogue hash is <code>sha256</code> of the five pricing fields per entry, sorted by id — so the make rate the whole board was priced from is bound to the seed.' +
+            redrawNote('', 'card', res.cardRedraws ?? 0)
         } else {
           const unchecked = res.publishedCardIndex !== undefined || res.publishedCatalogueHash !== undefined || res.publishedCatalogueSize !== undefined
           cardState = res.cardDrawMatches === false ? false : unchecked ? undefined : res.cardDrawMatches
           if (res.publishedCardIndex !== undefined) cardKv.push(['published index', res.publishedCardIndex + '   (not checked without the catalogue)'])
           if (res.publishedCatalogueHash !== undefined) cardKv.push(['published catalogue hash', res.publishedCatalogueHash + '   (not checked without the catalogue)'])
+          if (res.publishedCardRedraws !== undefined) cardKv.push(['published redraws', res.publishedCardRedraws + '   (not checked without the catalogue)'])
           cardDetail = 'HMAC-SHA256 of the seed over <code>:card:0</code> → first 13 hex. <strong>The make rate was taken as published</strong> — paste the published catalogue (Advanced) to recompute which card was drawn and bind the make rate to the seed.'
         }
         return sharedSteps(res).concat(
-          stepRow('3 — The putt pattern derives from the seed and the make rate', res.orderMatches,
-            'The eight pattern weights are <code>p<sup>h</sup>(1−p)<sup>3−h</sup></code> from the make rate — explicit float products, floored to integer ppm with the remainder handed to the largest fractions, pinned by the 701-point band table — then HMAC-SHA256 of the seed over <code>:order:0</code> → first 13 hex → scaled to the weight total → the pattern bucket it lands in. The bucket walk is integer-only.', patternKv),
+          stepRow('3 — The putt pattern derives from the seed and the make rate', res.redrawsMatches === false ? false : res.orderMatches,
+            'The eight pattern weights are <code>p<sup>h</sup>(1−p)<sup>3−h</sup></code> from the make rate — explicit float products, floored to integer ppm with the remainder handed to the largest fractions, pinned by the 701-point band table — then HMAC-SHA256 of the seed over <code>:order:0</code> → first 13 hex → scaled to the weight total → the pattern bucket it lands in. The bucket walk is integer-only.' +
+              redrawNote('', 'order', res.redraws ?? 0), patternKv),
           stepRow('4 — The prices were fixed by the same make rate', res.paytableMatches,
             'Every option pays <code>1 / (p · (1 + margin))</code> at the round’s published RTP — ' + (res.rtpPpm / 10000) + '% here' + (res.rtpPpmIsCurrent ? '' : ', ' + (BIRDIE_RTP_PPM / 10000) + '% for rounds opened today') + '. The paytable hash published at round open is <code>sha256("rtp|weights|floor(100·multiplier + 0.5)…")</code>; recomputing it from the make rate proves the prices you saw came from this board.', priceKv),
           stepRow('5 — The round type derives from the seed', rtState, rtDetail, rtKv),
@@ -1444,7 +1696,12 @@
           cardDraw: g('cardDraw'),
           cardIndex: g('cardIndex'),
           catalogueHash: g('catalogueHash'),
-          catalogueSize: g('catalogueSize')
+          catalogueSize: g('catalogueSize'),
+          // scheme 3 (RNG 1.1.0) — absent means scheme 2, so every older link is unchanged
+          schemeVersion: g('schemeVersion'),
+          redraws: g('redraws'),
+          cardRedraws: g('cardRedraws'),
+          roundTypeRedraws: g('roundTypeRedraws')
         })
         if ($('seed').value) run()
       })()
