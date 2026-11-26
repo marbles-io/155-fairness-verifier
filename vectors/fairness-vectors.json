@@ -1,5 +1,5 @@
 {
-  "spec": "155 provably-fair standard (v2)",
+  "spec": "155 provably-fair standard (v3, 155 Media Studios RNG 1.1.0)",
   "note": "Golden values \u2014 every implementation MUST reproduce these.",
   "drand_quicknet": {
     "beacon_id": "quicknet",
@@ -819,6 +819,421 @@
       "order": [
         "solo"
       ]
+    }
+  ],
+  "accepts": [
+    {
+      "note": "n=1e6: the zero draw rejects for every n that is not a power of two",
+      "hex13": "0000000000000",
+      "n": 1000000,
+      "threshold": 370496,
+      "accepts": false,
+      "index": 0
+    },
+    {
+      "note": "n=1e6: low52 = t - 64, the largest reachable rejected low part -> reject",
+      "hex13": "009a88ace24bc",
+      "n": 1000000,
+      "threshold": 370496,
+      "accepts": false,
+      "index": 2358
+    },
+    {
+      "note": "n=1e6: low52 = t, the smallest accepted low part -> accept, index 15624",
+      "hex13": "03ffef39085f5",
+      "n": 1000000,
+      "threshold": 370496,
+      "accepts": true,
+      "index": 15624
+    },
+    {
+      "note": "n=336 (8P3): low52 = t - 16 -> reject",
+      "hex13": "1000000000000",
+      "n": 336,
+      "threshold": 16,
+      "accepts": false,
+      "index": 21
+    },
+    {
+      "note": "n=336 (8P3): low52 = t -> accept",
+      "hex13": "0f3cf3cf3cf3d",
+      "n": 336,
+      "threshold": 16,
+      "accepts": true,
+      "index": 20
+    },
+    {
+      "note": "n=120 (6P3): low52 = t - 8 -> reject",
+      "hex13": "0eeeeeeeeeeef",
+      "n": 120,
+      "threshold": 16,
+      "accepts": false,
+      "index": 7
+    },
+    {
+      "note": "n=120 (6P3): low52 = t -> accept",
+      "hex13": "1ddddddddddde",
+      "n": 120,
+      "threshold": 16,
+      "accepts": true,
+      "index": 14
+    },
+    {
+      "note": "n=10 (Fast Lane): low52 = t - 2 -> reject",
+      "hex13": "199999999999a",
+      "n": 10,
+      "threshold": 6,
+      "accepts": false,
+      "index": 1
+    },
+    {
+      "note": "n=10 (Fast Lane): low52 = t -> accept",
+      "hex13": "6666666666667",
+      "n": 10,
+      "threshold": 6,
+      "accepts": true,
+      "index": 4
+    },
+    {
+      "note": "n=2^51+1 (test-only): low52 = t - 1 -> reject",
+      "hex13": "7fffffffffffe",
+      "n": 2251799813685249,
+      "threshold": 2251799813685247,
+      "accepts": false,
+      "index": 1125899906842623
+    },
+    {
+      "note": "n=2^51+1 (test-only): low52 = t -> accept",
+      "hex13": "fffffffffffff",
+      "n": 2251799813685249,
+      "threshold": 2251799813685247,
+      "accepts": true,
+      "index": 2251799813685248
+    },
+    {
+      "note": "n=1: power of two, threshold 0, never rejects",
+      "hex13": "0000000000000",
+      "n": 1,
+      "threshold": 0,
+      "accepts": true,
+      "index": 0
+    },
+    {
+      "note": "n=1: power of two, threshold 0, never rejects",
+      "hex13": "fffffffffffff",
+      "n": 1,
+      "threshold": 0,
+      "accepts": true,
+      "index": 0
+    },
+    {
+      "note": "n=2: power of two, threshold 0, never rejects",
+      "hex13": "0000000000000",
+      "n": 2,
+      "threshold": 0,
+      "accepts": true,
+      "index": 0
+    },
+    {
+      "note": "n=2: power of two, threshold 0, never rejects",
+      "hex13": "fffffffffffff",
+      "n": 2,
+      "threshold": 0,
+      "accepts": true,
+      "index": 1
+    },
+    {
+      "note": "n=4: power of two, threshold 0, never rejects",
+      "hex13": "0000000000000",
+      "n": 4,
+      "threshold": 0,
+      "accepts": true,
+      "index": 0
+    },
+    {
+      "note": "n=4: power of two, threshold 0, never rejects",
+      "hex13": "fffffffffffff",
+      "n": 4,
+      "threshold": 0,
+      "accepts": true,
+      "index": 3
+    }
+  ],
+  "redraw13": [
+    {
+      "server_seed": "0000000000000000000000000000000000000000000000000000000000000000",
+      "beacon": "",
+      "label": "order",
+      "i": 0,
+      "j": 1,
+      "preimage": ":order:0:1",
+      "hex13": "13e18206faac0"
+    },
+    {
+      "server_seed": "abababababababababababababababababababababababababababababababab",
+      "beacon": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      "label": "outcome",
+      "i": 0,
+      "j": 2,
+      "preimage": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef:outcome:0:2",
+      "hex13": "5e93d3c1b705c"
+    },
+    {
+      "server_seed": "abababababababababababababababababababababababababababababababab",
+      "beacon": "",
+      "label": "shot",
+      "i": 7,
+      "j": 1,
+      "preimage": ":shot:7:1",
+      "hex13": "c9184d70979a1"
+    }
+  ],
+  "draw_index": [
+    {
+      "note": "n=2^51+1, chain terminal: accepted first time",
+      "server_seed": "abababababababababababababababababababababababababababababababab",
+      "beacon": "",
+      "label": "order",
+      "i": 0,
+      "n": 2251799813685249,
+      "draw": "9dc752672d6c8",
+      "redraws": 0,
+      "accepted": "9dc752672d6c8",
+      "index": 1387835252370276
+    },
+    {
+      "note": "n=2^51+1, chain terminal: 1 redraw",
+      "server_seed": "abababababababababababababababababababababababababababababababab",
+      "beacon": "",
+      "label": "outcome",
+      "i": 0,
+      "n": 2251799813685249,
+      "draw": "74440da90c26e",
+      "redraws": 1,
+      "accepted": "6b438abd59943",
+      "index": 943502677167265
+    },
+    {
+      "note": "n=2^51+1, chain terminal: 2 redraws",
+      "server_seed": "abababababababababababababababababababababababababababababababab",
+      "beacon": "",
+      "label": "card",
+      "i": 0,
+      "n": 2251799813685249,
+      "draw": "d4fa339476b0d",
+      "redraws": 2,
+      "accepted": "a7383ebed830a",
+      "index": 1470880101613957
+    },
+    {
+      "note": "n=2^51+1, non-empty beacon: 3 redraws",
+      "server_seed": "abababababababababababababababababababababababababababababababab",
+      "beacon": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      "label": "outcome",
+      "i": 0,
+      "n": 2251799813685249,
+      "draw": "fef241cb9daad",
+      "redraws": 3,
+      "accepted": "c9cac8bd86160",
+      "index": 1774982307524784
+    },
+    {
+      "note": "n=2^51+1, chain link 1: 4 redraws",
+      "server_seed": "56c858f2b088359debfc994ef774b37ecf96871cceb2f132805e7290047d907d",
+      "beacon": "",
+      "label": "order",
+      "i": 0,
+      "n": 2251799813685249,
+      "draw": "e3683ddb85d3f",
+      "redraws": 4,
+      "accepted": "976483d42da1a",
+      "index": 1331663713955085
+    },
+    {
+      "note": "n=1e6 (every weighted pick), chain terminal: 0 redraws",
+      "server_seed": "abababababababababababababababababababababababababababababababab",
+      "beacon": "",
+      "label": "outcome",
+      "i": 0,
+      "n": 1000000,
+      "draw": "74440da90c26e",
+      "redraws": 0,
+      "accepted": "74440da90c26e",
+      "index": 454163
+    }
+  ],
+  "marble_order_v3": [
+    {
+      "note": "8-marble podium K=3",
+      "server_seed": "420ccb7d86addd5701549ba9b3ad7df12a603b32ab5aa31c2b5b6eda87ff4105",
+      "beacon": "",
+      "marbles": [
+        "black",
+        "blue",
+        "green",
+        "orange",
+        "red",
+        "sky",
+        "white",
+        "yellow"
+      ],
+      "k": 3,
+      "scheme_version": 3,
+      "draw": "34fbc80db5fce",
+      "index": 69,
+      "order": [
+        "blue",
+        "sky",
+        "red"
+      ]
+    },
+    {
+      "note": "fast_lane 10-lane single winner K=1",
+      "server_seed": "b9de435946c3c52824aa491e08518509f684b63f716504a1bc90f15e23be368a",
+      "beacon": "",
+      "marbles": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10"
+      ],
+      "k": 1,
+      "scheme_version": 3,
+      "draw": "ad3e0fe17d37c",
+      "index": 6,
+      "order": [
+        "7"
+      ]
+    },
+    {
+      "note": "5-way weighted at the 1.1.0 ppm (round(k/53 x 1e6))",
+      "server_seed": "bb805313a7ad6270c487a053fb6c90071e760f3841e4e85c78affa851cee1686",
+      "beacon": "",
+      "marbles": [
+        "white",
+        "orange",
+        "green",
+        "blue",
+        "pink"
+      ],
+      "k": 1,
+      "weights_ppm": [
+        471698,
+        377358,
+        94340,
+        47170,
+        9434
+      ],
+      "scheme_version": 3,
+      "draw": "198d357e41f88",
+      "index": 0,
+      "order": [
+        "white"
+      ]
+    }
+  ],
+  "vehicle_boundaries_v3": [
+    {
+      "note": "4-way under at a normal count",
+      "server_seed": "b157310dd16e5f3d7d68b28d51c3836d4b79f548399ad6ee738d27008ea26ccf",
+      "beacon": "",
+      "probabilities": {
+        "under": 0.3,
+        "range": 0.4,
+        "over": 0.25,
+        "jackpot": 0.05
+      },
+      "final_count": 14,
+      "gap": 3,
+      "scheme_version": 3,
+      "outcome": "under",
+      "lower_bound": 16,
+      "upper_bound": 19,
+      "outcomes": [
+        "under",
+        "range",
+        "over",
+        "jackpot"
+      ],
+      "weights_ppm": [
+        300000,
+        400000,
+        250000,
+        50000
+      ],
+      "draws": {
+        "outcome": "0836d987b79f9",
+        "under_offset": "fa4e30327b83e"
+      }
+    },
+    {
+      "note": "3-way range (range inclusive of bounds)",
+      "server_seed": "7fe6e446435a03cefd838f025509e9d086e79c3c710028be1c48d3e62c6b16e9",
+      "beacon": "",
+      "probabilities": {
+        "under": 0.3,
+        "range": 0.4,
+        "over": 0.3
+      },
+      "final_count": 14,
+      "gap": 3,
+      "scheme_version": 3,
+      "outcome": "range",
+      "lower_bound": 11,
+      "upper_bound": 14,
+      "outcomes": [
+        "under",
+        "range",
+        "over"
+      ],
+      "weights_ppm": [
+        300000,
+        400000,
+        300000
+      ],
+      "draws": {
+        "outcome": "57f5d99d574d4",
+        "range_offset": "e2ff8371ef994"
+      }
+    },
+    {
+      "note": "4-way jackpot at a normal count",
+      "server_seed": "92f5428bb5199b134c89116dee5d8b1ef343436c8a8ef103a681349f7f56dbfd",
+      "beacon": "",
+      "probabilities": {
+        "under": 0.3,
+        "range": 0.4,
+        "over": 0.25,
+        "jackpot": 0.05
+      },
+      "final_count": 14,
+      "gap": 3,
+      "scheme_version": 3,
+      "outcome": "jackpot",
+      "lower_bound": 14,
+      "upper_bound": 17,
+      "outcomes": [
+        "under",
+        "range",
+        "over",
+        "jackpot"
+      ],
+      "weights_ppm": [
+        300000,
+        400000,
+        250000,
+        50000
+      ],
+      "draws": {
+        "outcome": "fe930c3ca761a",
+        "jackpot_side": "5d35950c37f4d"
+      }
     }
   ]
 }
