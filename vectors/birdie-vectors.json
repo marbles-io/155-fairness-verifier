@@ -48,7 +48,7 @@
     }
   ],
   "draws": {
-    "note": "server_seed = link index 1 of the shared fairness vectors chain. card = weighted_pick(draw13(seed,'','card',0)); outcome = marble_order(seed, marbles, 1, weights_ppm) at label 'order'; round_type = weighted_pick(draw13(seed,'','round_type',0), ROUND_TYPES, weights) — three INDEPENDENT labels over one seed.",
+    "note": "server_seed = link index 1 of the shared fairness vectors chain. scheme_version 3 (RNG 1.1.0): card = weighted_pick_seeded(seed,'','card',0, entries, weight_ppm); outcome = marble_order(seed, marbles, 1, weights_ppm, scheme_version=3) at label 'order'; round_type = weighted_pick_seeded(seed,'','round_type',0, ROUND_TYPES, weights) — three INDEPENDENT labels over one seed. No draw here is rejected (redraws 0), so card_draw, order_draw and round_type_draw are the j=0 draw13 values and every result equals v2's weighted_pick(draw13(...)).",
     "server_seed": "56c858f2b088359debfc994ef774b37ecf96871cceb2f132805e7290047d907d",
     "card_draw": "758f351ff7aa2",
     "order_draw": "e3683ddb85d3f",

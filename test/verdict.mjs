@@ -301,6 +301,100 @@ export const BIRDIE_CASES = [
 ]
 export { BIRDIE_GOLD }
 
+// ── RNG 1.1.0: scheme_version 3 (unbiased integer scaling, BMM DIRT.1001) ────
+// A reveal that says scheme 3 is recomputed with rejection sampling; one that says 2
+// (or nothing) NEVER is, so every round above verifies exactly as it did. On the
+// golden seeds nothing is rejected, so 2 and 3 agree. The redraw rounds below use
+// test-only weight totals of 2^51+1, where a draw rejects about half the time; every
+// expected value comes from the Python reference engine (155-game-engine
+// fix/dirt-ith1195), not from this verifier.
+const MARBLE_V3 = { ...MARBLE_GOLD, schemeVersion: 3 }
+
+// Counting: gap 2^51+2 makes the 4-way range_offset scale to gap-1 = 2^51+1; the seed
+// (the chain terminal, link 3) rejects that draw three times. Count 2^52 keeps the
+// bounds clear of the lower clamp, so v2 and v3 publish different bounds.
+const COUNT_V3 = {
+  game: 'vehicle_boundaries',
+  schemeVersion: 3,
+  serverSeed: 'ab'.repeat(32),
+  observedCommitment: '271a413bd339c5709fdceaec41f14f11e9fbfb5042d72d331c65f32b284cd09a',
+  chainRootHash: '9968162c0cfdb6f10d33b847644c3717ae4bc105b186af847c8fc40f8564f6bb',
+  chainIndex: 3,
+  finalCount: 2 ** 52,
+  gap: 2 ** 51 + 2,
+  outcome: 'range',
+  lowerBound: 2985985849181974,
+  upperBound: 5237785662867224,
+  outcomes: 'under,range,over,jackpot',
+  weightsPpm: '300000,400000,250000,50000',
+  redraws: 'range_offset:3'
+}
+const V2_BOUNDS_OF_COUNT_V3 = { lowerBound: 3198603433912698, upperBound: 5450403247597948 }
+
+// Birdie: the golden round with a catalogue and round-type weights that each sum to
+// 2^51+1. Under v3 the card draw rejects twice (-> e02, make rate 500000, the board's)
+// and the round-type draw once (-> fire); v2 would have drawn e01 and frost.
+const BIRDIE_V3 = {
+  ...BIRDIE_GOLD,
+  schemeVersion: 3,
+  catalogue: [
+    { entry_id: 'e01', golfer_id: 'g_tom', location_id: 'l_bangsaen', make_rate_ppm: 300000, weight_ppm: 2 ** 50 },
+    { entry_id: 'e02', golfer_id: 'g_tom', location_id: 'l_hua_hin', make_rate_ppm: 500000, weight_ppm: 2 ** 50 + 1 }
+  ],
+  catalogueHash: '8cecf2f7c0d4985b82b77f6756aac5a4207398ab3767f5ee5e9b8600197362fb',
+  catalogueSize: 2,
+  cardIndex: 1,
+  roundType: 'fire',
+  roundTypesPpm: `none:${2 ** 50},frost:${2 ** 49},fire:${2 ** 49 + 1}`,
+  cardRedraws: 2,
+  roundTypeRedraws: 1
+}
+
+export const V3_CASES = [
+  // — scheme 3 where nothing was rejected: the same verdicts as scheme 2 —
+  ['v3 marble podium → verified (nothing rejected: same as v2)', MARBLE_V3, 'verified'],
+  ['v3 marble, scheme as a string (a deep link) → verified', { ...MARBLE_V3, schemeVersion: ' 3 ' }, 'verified'],
+  ['v3 marble, published redraws 0 → verified', { ...MARBLE_V3, redraws: 0 }, 'verified'],
+  ['v3 marble weighted at the 1.1.0 Stairpong ppm → verified', { ...MARBLE_WEIGHTED, schemeVersion: 3, weightsPpm: '471698,377358,94340,47170,9434' }, 'verified'],
+  ['v3 birdie golden round → verified (nothing rejected)', { ...BIRDIE_GOLD, schemeVersion: 3 }, 'verified'],
+  ['v3 on a crash round → verified (crash has no integer scaling)', { ...GOLD, schemeVersion: 3 }, 'verified'],
+  // — scheme 3 with real redraws —
+  ['v3 counting, range_offset rejected 3× → verified', COUNT_V3, 'verified'],
+  ['v3 counting, redraws as an object → verified', { ...COUNT_V3, redraws: { range_offset: 3 } }, 'verified'],
+  ['v3 counting, redraws omitted → verified (the count is informative)', { ...COUNT_V3, redraws: undefined }, 'verified'],
+  ['v3 counting, a 0 entry is the same as leaving it out → verified', { ...COUNT_V3, redraws: 'outcome:0,range_offset:3' }, 'verified'],
+  ['v3 birdie, card rejected 2× and round type 1× → verified', BIRDIE_V3, 'verified'],
+  ['v3 birdie, redraw counts omitted → verified', { ...BIRDIE_V3, cardRedraws: undefined, roundTypeRedraws: undefined }, 'verified'],
+  ['v3 birdie, no catalogue: card redraws not checkable → verified, card simply unchecked', { ...BIRDIE_V3, catalogue: undefined }, 'verified'],
+  // — a published redraw count that disagrees is a hard fail, like any published value —
+  ['v3 marble, redraws 1 on a draw that accepted first time → mismatch', { ...MARBLE_V3, redraws: 1 }, 'mismatch'],
+  ['v3 counting, wrong redraw count → mismatch', { ...COUNT_V3, redraws: 'range_offset:2' }, 'mismatch'],
+  ['v3 counting, a redraw on a label that accepted first time → mismatch', { ...COUNT_V3, redraws: 'outcome:1,range_offset:3' }, 'mismatch'],
+  ['v3 counting, redraws on a label never drawn → mismatch', { ...COUNT_V3, redraws: 'range_offset:3,jackpot_side:1' }, 'mismatch'],
+  ['v3 birdie, wrong card redraws → mismatch', { ...BIRDIE_V3, cardRedraws: 1 }, 'mismatch'],
+  ['v3 birdie, wrong round-type redraws → mismatch', { ...BIRDIE_V3, roundTypeRedraws: 0 }, 'mismatch'],
+  ['v3 birdie, pattern redraws 1 on a draw that accepted → mismatch', { ...BIRDIE_V3, redraws: 1 }, 'mismatch'],
+  // — dispatch: rejection is applied ONLY to a reveal that says 3 —
+  ['v3 counting round verified as scheme 2 → mismatch (v2 never rejects)', { ...COUNT_V3, schemeVersion: 2 }, 'mismatch'],
+  ['v3 counting round with no scheme (= 2) → mismatch', { ...COUNT_V3, schemeVersion: undefined }, 'mismatch'],
+  ['that seed’s v2 bounds at scheme 2 → verified', { ...COUNT_V3, schemeVersion: 2, redraws: undefined, ...V2_BOUNDS_OF_COUNT_V3 }, 'verified'],
+  ['that seed’s v2 bounds claimed as scheme 3 → mismatch', { ...COUNT_V3, redraws: undefined, ...V2_BOUNDS_OF_COUNT_V3 }, 'mismatch'],
+  ['v3 birdie round verified as scheme 2 → mismatch (v2 draws e01 and frost)', { ...BIRDIE_V3, schemeVersion: 2 }, 'mismatch'],
+  // — v2 has no redraws: a stray count is ignored, exactly as today —
+  ['v2 marble with a stray redraws → verified, ignored', { ...MARBLE_GOLD, redraws: 1 }, 'verified'],
+  ['v2 counting with a stray malformed redraws → verified, ignored', { ...COUNT_GOLD, redraws: 'nonsense' }, 'verified'],
+  ['v2 birdie with stray card / round-type redraws → verified, ignored', { ...BIRDIE_GOLD, cardRedraws: 5, roundTypeRedraws: 5 }, 'verified'],
+  // — malformed scheme-3 inputs are an honest "can't check" —
+  ['v3 marble, garbage redraws → error', { ...MARBLE_V3, redraws: 'two' }, 'error'],
+  ['v3 marble, negative redraws → error', { ...MARBLE_V3, redraws: -1 }, 'error'],
+  ['v3 counting, a redraw item without a count → error', { ...COUNT_V3, redraws: 'range_offset' }, 'error'],
+  ['v3 counting, a redraw label listed twice → error', { ...COUNT_V3, redraws: 'range_offset:3,range_offset:3' }, 'error'],
+  ['v3 birdie, fractional card redraws → error', { ...BIRDIE_V3, cardRedraws: '1.5' }, 'error'],
+  ['marble, scheme "three" → error, never guessed', { ...MARBLE_GOLD, schemeVersion: 'three' }, 'error'],
+  ['counting, scheme 2.5 → error, never guessed', { ...COUNT_GOLD, schemeVersion: '2.5' }, 'error'],
+  ['birdie, scheme "v3" → error, never guessed', { ...BIRDIE_GOLD, schemeVersion: 'v3' }, 'error']
+]
+
 // The dispatcher: `game` absent (or anything unrecognised) MUST stay crash.
 export const DISPATCH_CASES = [
   ['dispatch: no game → crash verifier', GOLD, 'verified'],
@@ -331,8 +425,9 @@ async function run() {
   for (const [name, round, want] of MARBLE_CASES) await one(verifyMarbleRound, name, round, want)
   for (const [name, round, want] of BIRDIE_CASES) await one(verifyBirdieRound, name, round, want)
   for (const [name, round, want] of DISPATCH_CASES) await one(verifyRound, name, round, want)
-  const total = CASES.length + COUNTING_CASES.length + MARBLE_CASES.length + BIRDIE_CASES.length + DISPATCH_CASES.length
-  console.log(fail ? `\nverdict cases: ${fail} FAILED` : `✓ verdict edge cases (${total}) all correct — crash ${CASES.length}, counting ${COUNTING_CASES.length}, marble ${MARBLE_CASES.length}, birdie ${BIRDIE_CASES.length}, dispatch ${DISPATCH_CASES.length}`)
+  for (const [name, round, want] of V3_CASES) await one(verifyRound, name, round, want)
+  const total = CASES.length + COUNTING_CASES.length + MARBLE_CASES.length + BIRDIE_CASES.length + DISPATCH_CASES.length + V3_CASES.length
+  console.log(fail ? `\nverdict cases: ${fail} FAILED` : `✓ verdict edge cases (${total}) all correct — crash ${CASES.length}, counting ${COUNTING_CASES.length}, marble ${MARBLE_CASES.length}, birdie ${BIRDIE_CASES.length}, dispatch ${DISPATCH_CASES.length}, scheme 3 ${V3_CASES.length}`)
   return fail
 }
 

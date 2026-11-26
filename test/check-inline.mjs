@@ -31,7 +31,8 @@ const mod =
   ' crashMultiplier, draw13, vehicleBoundaries, weightsPpm, weightedPick, scaledIndex,' +
   ' permutationsIndex, marbleOrder, OUTCOME_ORDER, WEIGHT_SCALE,' +
   ' PATTERNS, BIRDIE_OPTIONS, BIRDIE_RTP_PPM, BIRDIE_MARGIN, ROUND_TYPES, patternWeightsPpm, countPpm, birdieBoard,' +
-  ' paytableHash, hashTerm, cataloguePreimage, catalogueHash, birdieCard, roundTypeDraw, drawRoundType }\n'
+  ' paytableHash, hashTerm, cataloguePreimage, catalogueHash, birdieCard, roundTypeDraw, drawRoundType,' +
+  ' redraw13, MAX_REDRAWS, rejectionThreshold, accepts, drawIndex, pickBucket, weightedPickSeeded }\n'
 
 const tmp = join(here, '.inline-extract.mjs')
 writeFileSync(tmp, mod)
@@ -146,9 +147,62 @@ try {
     eq(`inline birdie round_type[${v.note}]`, `${r.draw}/${r.roundType}`, `${v.draw}/${v.round_type}`)
   }
 
+  // RNG 1.1.0 (scheme 3): the inlined rejection sampling must match the engine too
+  eq('inline MAX_REDRAWS', m.MAX_REDRAWS, 64)
+  for (const a of V.accepts) {
+    eq(`inline accepts[${a.note}] threshold`, m.rejectionThreshold(a.n), a.threshold)
+    eq(`inline accepts[${a.note}] ${a.hex13}`, m.accepts(a.hex13, a.n), a.accepts)
+    eq(`inline accepts[${a.note}] index`, m.scaledIndex(a.hex13, a.n), a.index)
+  }
+  for (const r of V.redraw13) eq(`inline redraw13(${r.preimage})`, await m.redraw13(r.server_seed, r.beacon, r.label, r.i, r.j), r.hex13)
+  for (const d of V.draw_index) {
+    const got = await m.drawIndex(d.server_seed, d.beacon, d.label, d.i, d.n)
+    eq(`inline drawIndex[${d.note}]`, `${got.draw}/${got.redraws}/${got.accepted}/${got.index}`, `${d.draw}/${d.redraws}/${d.accepted}/${d.index}`)
+  }
+  for (const v of V.marble_order_v3) {
+    const opts = { beacon: v.beacon, schemeVersion: v.scheme_version }
+    if (v.weights_ppm !== undefined) opts.weightsPpm = v.weights_ppm
+    const got = await m.marbleOrder(v.server_seed, v.marbles, v.k, opts)
+    eq(`inline marble_v3[${v.note}]`, `${got.order.join(',')}/${got.index}/${got.draw}/${'redraws' in got}`, `${v.order.join(',')}/${v.index}/${v.draw}/false`)
+  }
+  for (const v of V.vehicle_boundaries_v3) {
+    const got = await m.vehicleBoundaries(v.server_seed, v.probabilities, v.final_count, { beacon: v.beacon, gap: v.gap, schemeVersion: v.scheme_version })
+    eq(`inline vehicle_v3[${v.note}]`, `${got.outcome}/${got.lowerBound}-${got.upperBound}/${JSON.stringify(got.draws)}/${'redraws' in got}`,
+      `${v.outcome}/${v.lower_bound}-${v.upper_bound}/${JSON.stringify(v.draws)}/false`)
+  }
+  eq('inline pickBucket fallback', m.pickBucket(2, ['a', 'b'], [1, 1]), 'b')
+  const ws = await m.weightedPickSeeded('ab'.repeat(32), '', 'outcome', 0, ['under', 'range', 'over', 'jackpot'], [300000, 400000, 250000, 50000])
+  eq('inline weightedPickSeeded', `${ws.name}/${ws.index}/${ws.redraws}`, 'range/454163/0')
+  let capCode
+  try { await m.drawIndex('ab'.repeat(32), '', 'order', 0, 2 ** 52 + 1) } catch (e) { capCode = e.code }
+  eq('inline drawIndex past MAX_REDRAWS throws', capCode, 'MAX_REDRAWS')
+  // the rejection path end to end (Python reference values, test-only totals of 2^51+1)
+  {
+    const probs = { under: 0.3, range: 0.4, over: 0.25, jackpot: 0.05 }
+    const v3 = await m.vehicleBoundaries('ab'.repeat(32), probs, 2 ** 52, { gap: 2 ** 51 + 2, schemeVersion: 3 })
+    eq('inline v3 counting redraw', `${v3.lowerBound}-${v3.upperBound}/${JSON.stringify(v3.redraws)}/${JSON.stringify(v3.acceptedDraws)}`,
+      '2985985849181974-5237785662867224/{"range_offset":3}/{"range_offset":"ac885fc4f71d2"}')
+    const v2 = await m.vehicleBoundaries('ab'.repeat(32), probs, 2 ** 52, { gap: 2 ** 51 + 2 })
+    eq('inline v2 counting, same seed', `${v2.lowerBound}-${v2.upperBound}/${'redraws' in v2}`, '3198603433912698-5450403247597948/false')
+    const seed = '56c858f2b088359debfc994ef774b37ecf96871cceb2f132805e7290047d907d'
+    const entries = [
+      { entry_id: 'e01', golfer_id: 'g_tom', location_id: 'l_bangsaen', make_rate_ppm: 300000, weight_ppm: 2 ** 50 },
+      { entry_id: 'e02', golfer_id: 'g_tom', location_id: 'l_hua_hin', make_rate_ppm: 500000, weight_ppm: 2 ** 50 + 1 }
+    ]
+    const c3 = await m.birdieCard(seed, entries, { schemeVersion: 3 })
+    eq('inline v3 birdie card redraw', `${c3.entryId}/${c3.accepted}/${c3.redraws}/${c3.target}`, 'e02/beed50544faaa/2/1679411713834325')
+    const t3 = await m.drawRoundType(seed, { none: 2 ** 50, frost: 2 ** 49, fire: 2 ** 49 + 1 }, { schemeVersion: 3 })
+    eq('inline v3 birdie round_type redraw', `${t3.roundType}/${t3.accepted}/${t3.redraws}/${t3.target}`, 'fire/c38a63d8c4102/1/1719993184428161')
+  }
+  // every existing vector, handed to the INLINED verifier as a round, still verifies green
+  const { vectorRounds, withScheme, SCHEMES } = await import(pathToFileURL(join(here, 'vector-rounds.mjs')).href)
+  for (const [name, round] of vectorRounds(V)) {
+    for (const [sname, scheme] of SCHEMES) eq(`inline verifyRound(${name}) ${sname}`, (await m.verifyRound(withScheme(round, scheme))).verdict, 'verified')
+  }
+
   // the inlined verifier must reach the SAME verdicts as src/ on every edge case
   // (this is where src and verify.html previously drifted).
-  const { CASES, COUNTING_CASES, MARBLE_CASES, BIRDIE_CASES, DISPATCH_CASES } = await import(
+  const { CASES, COUNTING_CASES, MARBLE_CASES, BIRDIE_CASES, DISPATCH_CASES, V3_CASES } = await import(
     pathToFileURL(join(here, 'verdict.mjs')).href
   )
   for (const [name, round, want] of CASES) {
@@ -164,6 +218,9 @@ try {
     eq(`inline verdict: ${name}`, (await m.verifyBirdieRound(round)).verdict, want)
   }
   for (const [name, round, want] of DISPATCH_CASES) {
+    eq(`inline verdict: ${name}`, (await m.verifyRound(round)).verdict, want)
+  }
+  for (const [name, round, want] of V3_CASES) {
     eq(`inline verdict: ${name}`, (await m.verifyRound(round)).verdict, want)
   }
 } finally {

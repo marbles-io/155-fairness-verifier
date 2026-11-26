@@ -1,6 +1,6 @@
-// Provably-fair core (v2) — dependency-free ES module.
-// Locked to vectors/fairness-vectors.json — run `node test/run.mjs`.
-// No game-specific logic here; result mapping is in mappers.js.
+// Provably-fair core (v2, plus the scheme-3 redraw of 155 Media Studios RNG 1.1.0)
+// — dependency-free ES module. Locked to vectors/fairness-vectors.json — run
+// `node test/run.mjs`. No game-specific logic here; result mapping is in mappers.js.
 // Uses only the Web Crypto API (browser + Node 20+) and BigInt.
 
 const R_DENOM = 2 ** 52 // exact IEEE-754 double mantissa (Bustabit convention)
@@ -99,6 +99,26 @@ export async function hmacSha256Hex(serverSeed, message) {
 export async function draw13(serverSeed, beacon, label, i) {
   assertDomain(beacon, label, i)
   return (await hmacSha256Hex(serverSeed, `${beacon}:${label}:${i}`)).slice(0, 13)
+}
+
+// The j-th (j >= 1) rejection-sampling redraw of the draw (label, i) — scheme 3
+// (RNG 1.1.0) only. preimage = `${beacon}:${label}:${i}:${j}`: THREE colons where
+// draw13 has two, and labels are ^[a-z_]+$ with i in decimal, so a redraw can never
+// equal any draw13 preimage. It is NOT a draw at (label, i+1) — i > 0 is already a
+// real draw in some games. Keyed exactly like draw13 (HMAC key = decoded seed).
+export async function redraw13(serverSeed, beacon, label, i, j) {
+  assertDomain(beacon, label, i)
+  assertRedraw(j)
+  return (await hmacSha256Hex(serverSeed, `${beacon}:${label}:${i}:${j}`)).slice(0, 13)
+}
+
+// j counts redraws: a whole number >= 1 (safe, so it prints in plain decimal).
+function assertRedraw(j) {
+  if (!Number.isSafeInteger(j) || j < 1) {
+    const e = new Error(`bad j (an integer >= 1): ${j}`)
+    e.code = 'REDRAW_J'
+    throw e
+  }
 }
 
 // Uniform float in [0, 1) from the 52-bit draw.
